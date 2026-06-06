@@ -5,6 +5,20 @@ dotenv.config();
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  TRUST_PROXY: z
+    .union([z.boolean(), z.enum(['true', 'false', '1', '0'])])
+    .optional()
+    .transform((value) => {
+      if (typeof value === 'boolean') {
+        return value;
+      }
+
+      if (value === undefined) {
+        return undefined;
+      }
+
+      return value === 'true' || value === '1';
+    }),
   PORT: z.coerce.number().int().positive().default(5000),
   API_PREFIX: z.string().min(1).default('/api/v1'),
   MONGODB_URI: z.string().min(1),

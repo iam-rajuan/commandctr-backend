@@ -169,8 +169,32 @@ const ordersQuery = `
         totalPriceSet { shopMoney { amount } }
         subtotalPriceSet { shopMoney { amount } }
         totalTaxSet { shopMoney { amount } }
-        shippingAddress
-        billingAddress
+        shippingAddress {
+          name
+          company
+          address1
+          address2
+          city
+          province
+          zip
+          country
+          countryCodeV2
+          phone
+          formatted
+        }
+        billingAddress {
+          name
+          company
+          address1
+          address2
+          city
+          province
+          zip
+          country
+          countryCodeV2
+          phone
+          formatted
+        }
         lineItems(first: 50) {
           nodes {
             title
