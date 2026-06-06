@@ -4,10 +4,12 @@ import { app } from '@/app';
 import { connectDatabase } from '@/config/database';
 import { env } from '@/config/env';
 import { logger } from '@/config/logger';
+import { ensureDefaultAdmin } from '@/modules/seed/admin-seed.service';
 
 const startServer = async (): Promise<void> => {
   try {
     await connectDatabase();
+    await ensureDefaultAdmin();
 
     const server = app.listen(env.PORT, () => {
       logger.info(

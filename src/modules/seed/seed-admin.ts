@@ -1,31 +1,14 @@
-import bcrypt from 'bcryptjs';
-
 import { connectDatabase } from '@/config/database';
 import { logger } from '@/config/logger';
-import { UserModel } from '@/modules/users/user.model';
+import { ensureDefaultAdmin } from './admin-seed.service';
 
 const seedAdmin = async (): Promise<void> => {
   await connectDatabase();
-
-  const email = 'admin@commandctr.com';
-  const existingAdmin = await UserModel.findOne({ email });
-
-  if (existingAdmin) {
-    logger.info({ email }, 'Default admin already exists');
-    process.exit(0);
-  }
-
-  await UserModel.create({
-    firstName: 'CommandCtr',
-    lastName: 'Admin',
-    email,
-    password: await bcrypt.hash('admin@123', 10),
-    role: 'admin',
-    status: 'active'
-  });
-
-  logger.info({ email }, 'Default admin created successfully');
+  await ensureDefaultAdmin();
   process.exit(0);
 };
 
-void seedAdmin();
+void seedAdmin().catch((error) => {
+  logger.error({ err: error }, 'Failed to seed default admin');
+  process.exit(1);
+});

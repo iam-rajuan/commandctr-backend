@@ -16,7 +16,7 @@ import { ApiResponse } from '@/shared/api-response';
 
 const app = express();
 
-app.set('trust proxy', true);
+app.set('trust proxy', env.NODE_ENV === 'production' ? 1 : false);
 
 app.use(helmet());
 app.use(corsOptions);
