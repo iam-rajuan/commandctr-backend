@@ -8,6 +8,10 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(5000),
   API_PREFIX: z.string().min(1).default('/api/v1'),
   MONGODB_URI: z.string().min(1),
+  JWT_ACCESS_SECRET: z.string().min(1),
+  JWT_REFRESH_SECRET: z.string().min(1),
+  JWT_ACCESS_EXPIRES_IN: z.string().min(1).default('15m'),
+  JWT_REFRESH_EXPIRES_IN: z.string().min(1).default('7d'),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(15 * 60 * 1000),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
@@ -16,7 +20,12 @@ const envSchema = z.object({
   AWS_ACCESS_KEY_ID: z.string().min(1),
   AWS_SECRET_ACCESS_KEY: z.string().min(1),
   RESEND_API_KEY: z.string().min(1),
-  RESEND_FROM_EMAIL: z.email()
+  RESEND_FROM_EMAIL: z.email(),
+  SHOPIFY_SHOP_DOMAIN: z.string().min(1).optional(),
+  SHOPIFY_API_VERSION: z.string().min(1).default('2026-04'),
+  SHOPIFY_CLIENT_ID: z.string().min(1).optional(),
+  SHOPIFY_CLIENT_SECRET: z.string().min(1).optional(),
+  SHOPIFY_ADMIN_ACCESS_TOKEN: z.string().min(1).optional()
 });
 
 const parsedEnv = envSchema.safeParse(process.env);

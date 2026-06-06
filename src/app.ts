@@ -6,6 +6,7 @@ import helmet from 'helmet';
 
 import { corsOptions } from '@/config/cors';
 import { env } from '@/config/env';
+import { setupSwagger } from '@/config/swagger';
 import { httpStatus } from '@/constants/http.constant';
 import { errorMiddleware } from '@/middlewares/error.middleware';
 import { notFoundMiddleware } from '@/middlewares/not-found.middleware';
@@ -40,6 +41,7 @@ app.get('/', (_req, res) => {
     .json(ApiResponse.success('CommandCtr backend is running', { version: '1.0.0' }));
 });
 
+setupSwagger(app);
 app.use(env.API_PREFIX, apiRouter);
 
 app.use(notFoundMiddleware);
