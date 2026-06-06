@@ -19,7 +19,7 @@ export const dashboardService = {
       lowStock,
       syncErrors,
       connectedMarketplace: 'shopify',
-      shopifyConnectionStatus: shopifyService.getConnectionState()
+      shopifyConnectionStatus: await shopifyService.getConnectionState(userId)
     };
   }
 };

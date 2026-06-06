@@ -88,6 +88,30 @@ const spec = swaggerJSDoc({
       '/api/v1/admin/users/{id}/block': { patch: { tags: ['Admin'], summary: 'Block user', security: bearerSecurity, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'OK' } } } },
       '/api/v1/admin/users/{id}/unblock': { patch: { tags: ['Admin'], summary: 'Unblock user', security: bearerSecurity, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'OK' } } } },
       '/api/v1/dashboard/overview': { get: { tags: ['Dashboard'], summary: 'Dashboard overview', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
+      '/api/v1/shopify/connect': {
+        get: {
+          tags: ['Shopify'],
+          summary: 'Start Shopify OAuth connection',
+          description: 'Frontend should open this endpoint after user login to begin the Shopify OAuth flow.',
+          security: bearerSecurity,
+          responses: { '302': { description: 'Redirects to Shopify OAuth authorize screen' } }
+        }
+      },
+      '/api/v1/shopify/callback': {
+        get: {
+          tags: ['Shopify'],
+          summary: 'Handle Shopify OAuth callback',
+          description: 'Public callback endpoint used by Shopify after app authorization.',
+          parameters: [
+            { name: 'shop', in: 'query', required: true, schema: { type: 'string' } },
+            { name: 'code', in: 'query', required: true, schema: { type: 'string' } },
+            { name: 'hmac', in: 'query', required: true, schema: { type: 'string' } },
+            { name: 'state', in: 'query', required: true, schema: { type: 'string' } }
+          ],
+          responses: { '200': { description: 'Shopify connection established' }, '302': { description: 'Redirects to frontend success URL if configured' } }
+        }
+      },
+      '/api/v1/shopify/disconnect': { post: { tags: ['Shopify'], summary: 'Disconnect Shopify store', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
       '/api/v1/shopify/status': { get: { tags: ['Shopify'], summary: 'Shopify status', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
       '/api/v1/shopify/shop': { get: { tags: ['Shopify'], summary: 'Shopify shop', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
       '/api/v1/shopify/import-products': { post: { tags: ['Shopify'], summary: 'Import Shopify products', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
@@ -150,7 +174,16 @@ const spec = swaggerJSDoc({
       },
       '/api/v1/inventory/{id}/safety-buffer': { patch: { tags: ['Inventory'], summary: 'Update safety buffer', security: bearerSecurity, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'OK' } } } },
       '/api/v1/sync/logs': { get: { tags: ['Sync'], summary: 'Sync logs', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
-      '/api/v1/sync/logs/{id}': { get: { tags: ['Sync'], summary: 'Sync log', security: bearerSecurity, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'OK' } } } }
+      '/api/v1/sync/logs/{id}': { get: { tags: ['Sync'], summary: 'Sync log', security: bearerSecurity, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'OK' } } } },
+      '/api/v1/marketplace-connections': {
+        get: {
+          tags: ['Marketplace Connections'],
+          summary: 'List current user marketplace connections',
+          description: 'Returns marketplace connections without exposing encrypted access tokens or secrets.',
+          security: bearerSecurity,
+          responses: { '200': { description: 'OK' } }
+        }
+      }
     }
   },
   apis: []

@@ -1,14 +1,18 @@
+import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { Request, Response } from 'express';
+
 import { env } from '@/config/env';
 import { httpStatus } from '@/constants/http.constant';
+import { marketplaceConnectionService } from '@/modules/marketplace-connections/marketplace-connection.service';
 import { InventoryModel } from '@/modules/inventory/inventory.model';
 import { OrderModel } from '@/modules/orders/order.model';
 import { ProductModel } from '@/modules/products/product.model';
 import { syncLogService } from '@/modules/sync/sync-log.service';
 import { ApiError } from '@/shared/api-error';
+import { encryptionUtils } from '@/utils/encryption';
 
 import { shopifyClient } from './shopify.client';
 import { shopifyMapper } from './shopify.mapper';
-import { ShopifyConnectionModel } from './shopify.model';
 
 type ShopifyInventoryLevel = {
   location?: { id?: string; name?: string };
@@ -63,6 +67,35 @@ type ShopifyOrderNode = {
     }>;
   };
 };
+
+type ShopifyOAuthAccessTokenResponse = {
+  access_token?: string;
+  scope?: string;
+  scopes?: string;
+};
+
+type ResolvedShopifyAccess = {
+  shopDomain: string;
+  accessToken: string;
+  source: 'marketplace_connection' | 'env_fallback';
+};
+
+const SHOPIFY_SCOPES = [
+  'read_customers',
+  'read_fulfillments',
+  'write_fulfillments',
+  'write_inventory',
+  'read_inventory',
+  'read_locations',
+  'read_orders',
+  'write_orders',
+  'read_products',
+  'write_products'
+].join(',');
+
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+const oauthStateStore = new Map<string, { userId: string; createdAt: number }>();
 
 const productsQuery = `
   query GetProducts {
@@ -134,49 +167,284 @@ const ordersQuery = `
   }
 `;
 
+const getSingleQueryValue = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    return typeof value[0] === 'string' ? value[0] : '';
+  }
+
+  return typeof value === 'string' ? value : '';
+};
+
+const cleanupExpiredStates = () => {
+  const now = Date.now();
+
+  for (const [state, entry] of oauthStateStore.entries()) {
+    if (now - entry.createdAt > OAUTH_STATE_TTL_MS) {
+      oauthStateStore.delete(state);
+    }
+  }
+};
+
+const createOAuthState = (userId: string) => {
+  cleanupExpiredStates();
+  const state = randomBytes(24).toString('hex');
+  oauthStateStore.set(state, { userId, createdAt: Date.now() });
+  return state;
+};
+
+const consumeOAuthState = (state: string) => {
+  cleanupExpiredStates();
+  const entry = oauthStateStore.get(state);
+
+  if (!entry) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Shopify OAuth state is invalid or has expired');
+  }
+
+  oauthStateStore.delete(state);
+  return entry.userId;
+};
+
+const buildShopifyHmacMessage = (query: Request['query']) =>
+  Object.keys(query)
+    .filter((key) => key !== 'hmac' && key !== 'signature')
+    .sort()
+    .map((key) => `${key}=${getSingleQueryValue(query[key])}`)
+    .join('&');
+
+const isValidShopifyHmac = (query: Request['query']) => {
+  const hmac = getSingleQueryValue(query.hmac);
+  if (!hmac || !env.SHOPIFY_CLIENT_SECRET) {
+    return false;
+  }
+
+  const digest = createHmac('sha256', env.SHOPIFY_CLIENT_SECRET).update(buildShopifyHmacMessage(query)).digest('hex');
+
+  try {
+    return timingSafeEqual(Buffer.from(digest, 'utf8'), Buffer.from(hmac, 'utf8'));
+  } catch {
+    return false;
+  }
+};
+
+const buildFrontendRedirectUrl = (params: Record<string, string>) => {
+  if (!env.FRONTEND_URL) {
+    return null;
+  }
+
+  const url = new URL(env.FRONTEND_URL);
+  for (const [key, value] of Object.entries(params)) {
+    url.searchParams.set(key, value);
+  }
+
+  return url.toString();
+};
+
+const exchangeOAuthCodeForToken = async (shopDomain: string, code: string) => {
+  if (!env.SHOPIFY_CLIENT_ID || !env.SHOPIFY_CLIENT_SECRET) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Shopify OAuth credentials are not configured');
+  }
+
+  const response = await fetch(`https://${shopDomain}/admin/oauth/access_token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      client_id: env.SHOPIFY_CLIENT_ID,
+      client_secret: env.SHOPIFY_CLIENT_SECRET,
+      code
+    })
+  });
+
+  if (!response.ok) {
+    throw new ApiError(httpStatus.BAD_GATEWAY, 'Failed to exchange Shopify OAuth code for an access token');
+  }
+
+  const payload = (await response.json()) as ShopifyOAuthAccessTokenResponse;
+  if (!payload.access_token) {
+    throw new ApiError(httpStatus.BAD_GATEWAY, 'Shopify OAuth token response did not include an access token');
+  }
+
+  return {
+    accessToken: payload.access_token,
+    scopes: (payload.scope ?? payload.scopes ?? '')
+      .split(',')
+      .map((scope) => scope.trim())
+      .filter(Boolean)
+  };
+};
+
+const resolveShopifyAccess = async (userId: string): Promise<ResolvedShopifyAccess> => {
+  const connection = await marketplaceConnectionService.getShopifyConnection(userId);
+  if (connection?.accessTokenEncrypted) {
+    return {
+      shopDomain: connection.shopDomain,
+      accessToken: encryptionUtils.decrypt(connection.accessTokenEncrypted),
+      source: 'marketplace_connection'
+    };
+  }
+
+  if (env.SHOPIFY_SHOP_DOMAIN && env.SHOPIFY_ADMIN_ACCESS_TOKEN) {
+    return {
+      shopDomain: env.SHOPIFY_SHOP_DOMAIN,
+      accessToken: env.SHOPIFY_ADMIN_ACCESS_TOKEN,
+      source: 'env_fallback'
+    };
+  }
+
+  throw new ApiError(httpStatus.BAD_REQUEST, 'Shopify store is not connected.');
+};
+
+const executeShopifyRequest = async <T>(userId: string, query: string, variables?: Record<string, unknown>) => {
+  const access = await resolveShopifyAccess(userId);
+  const data = await shopifyClient.request<T>({
+    shopDomain: access.shopDomain,
+    accessToken: access.accessToken,
+    query,
+    variables
+  });
+
+  if (access.source === 'marketplace_connection') {
+    await marketplaceConnectionService.markShopifyChecked(userId, 'connected');
+  }
+
+  return { access, data };
+};
+
+const requireOAuthConfig = () => {
+  if (!env.SHOPIFY_SHOP_DOMAIN || !env.SHOPIFY_CLIENT_ID || !env.SHOPIFY_REDIRECT_URI) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Shopify OAuth environment variables are not fully configured');
+  }
+};
+
 export const shopifyService = {
-  getConnectionState() {
-    return env.SHOPIFY_SHOP_DOMAIN && env.SHOPIFY_ADMIN_ACCESS_TOKEN ? 'connected' : 'not_connected';
+  async getConnectionState(userId: string) {
+    const connection = await marketplaceConnectionService.getShopifyConnection(userId);
+    if (connection?.accessTokenEncrypted) {
+      return connection.status;
+    }
+
+    return env.SHOPIFY_SHOP_DOMAIN && env.SHOPIFY_ADMIN_ACCESS_TOKEN ? 'fallback_configured' : 'not_connected';
   },
 
-  async ensureConfigured() {
-    if (!env.SHOPIFY_SHOP_DOMAIN || !env.SHOPIFY_ADMIN_ACCESS_TOKEN) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Shopify credentials are not configured in environment');
+  async getConnectUrl(userId: string) {
+    requireOAuthConfig();
+
+    const state = createOAuthState(userId);
+    const url = new URL(`https://${env.SHOPIFY_SHOP_DOMAIN}/admin/oauth/authorize`);
+    url.searchParams.set('client_id', env.SHOPIFY_CLIENT_ID!);
+    url.searchParams.set('scope', SHOPIFY_SCOPES);
+    url.searchParams.set('redirect_uri', env.SHOPIFY_REDIRECT_URI!);
+    url.searchParams.set('state', state);
+
+    return url.toString();
+  },
+
+  async handleOAuthCallback(req: Request, res: Response) {
+    const shop = getSingleQueryValue(req.query.shop).toLowerCase();
+    const code = getSingleQueryValue(req.query.code);
+    const state = getSingleQueryValue(req.query.state);
+
+    if (!shop || !code || !state || !getSingleQueryValue(req.query.hmac)) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Missing required Shopify OAuth callback parameters');
     }
+
+    if (!isValidShopifyHmac(req.query)) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Shopify callback HMAC validation failed');
+    }
+
+    const userId = consumeOAuthState(state);
+    const { accessToken, scopes } = await exchangeOAuthCodeForToken(shop, code);
+    const encryptedToken = encryptionUtils.encrypt(accessToken);
+
+    await marketplaceConnectionService.upsertShopifyConnection({
+      userId,
+      shopDomain: shop,
+      accessTokenEncrypted: encryptedToken,
+      scopes,
+      status: 'connected',
+      connectedAt: new Date(),
+      disconnectedAt: undefined,
+      lastCheckedAt: new Date()
+    });
+
+    const redirectUrl = buildFrontendRedirectUrl({
+      marketplace: 'shopify',
+      status: 'connected',
+      shop
+    });
+
+    if (redirectUrl) {
+      res.redirect(redirectUrl);
+      return;
+    }
+
+    res.status(httpStatus.OK).json({
+      success: true,
+      message: 'Shopify store connected successfully',
+      data: {
+        marketplace: 'shopify',
+        shopDomain: shop,
+        status: 'connected',
+        scopes
+      }
+    });
+  },
+
+  async disconnect(userId: string) {
+    const connection = await marketplaceConnectionService.markShopifyDisconnected(userId);
+    return marketplaceConnectionService.toSafeConnection(connection);
   },
 
   async getStatus(userId: string) {
-    await this.ensureConfigured();
-    const data = await shopifyClient.request<{ shop: { name: string; email: string; myshopifyDomain: string } }>(
-      `query { shop { name email myshopifyDomain } }`
-    );
+    const connection = await marketplaceConnectionService.getShopifyConnection(userId);
+    const baseConnection = connection ? marketplaceConnectionService.toSafeConnection(connection) : null;
 
-    await ShopifyConnectionModel.updateOne(
-      { userId, shopDomain: data.shop.myshopifyDomain },
-      { $set: { status: 'connected', lastSyncedAt: new Date() } },
-      { upsert: true }
-    );
+    try {
+      const { access, data } = await executeShopifyRequest<{ shop: { name: string; email: string; myshopifyDomain: string } }>(
+        userId,
+        `query { shop { name email myshopifyDomain } }`
+      );
 
-    return { connected: true, shop: data.shop };
+      return {
+        connected: true,
+        source: access.source,
+        shop: data.shop,
+        connection: baseConnection
+      };
+    } catch (error) {
+      if (connection) {
+        await marketplaceConnectionService.markShopifyChecked(userId, 'error');
+      }
+
+      if (error instanceof ApiError && error.message === 'Shopify store is not connected.') {
+        return {
+          connected: false,
+          source: 'none',
+          shop: null,
+          connection: baseConnection
+        };
+      }
+
+      throw error;
+    }
   },
 
-  async getShop() {
-    await this.ensureConfigured();
-    const data = await shopifyClient.request<{
+  async getShop(userId: string) {
+    const { data } = await executeShopifyRequest<{
       shop: { id: string; name: string; email: string; myshopifyDomain: string; currencyCode: string; plan: { displayName: string } };
-    }>(`query { shop { id name email myshopifyDomain currencyCode plan { displayName } } }`);
+    }>(userId, `query { shop { id name email myshopifyDomain currencyCode plan { displayName } } }`);
 
     return data.shop;
   },
 
-  async getProducts() {
-    await this.ensureConfigured();
-    const data = await shopifyClient.request<{ products: { nodes: ShopifyProductNode[] } }>(productsQuery);
+  async getProducts(userId: string) {
+    const { data } = await executeShopifyRequest<{ products: { nodes: ShopifyProductNode[] } }>(userId, productsQuery);
     return data.products.nodes;
   },
 
   async importProducts(userId: string) {
-    const products = await this.getProducts();
+    const products = await this.getProducts(userId);
 
     for (const productNode of products) {
       const mapped = shopifyMapper.toLocalProduct(userId, productNode);
@@ -206,6 +474,7 @@ export const shopifyService = {
       }
     }
 
+    await marketplaceConnectionService.markShopifySynced(userId);
     await syncLogService.create({
       userId,
       entityType: 'product',
@@ -218,10 +487,9 @@ export const shopifyService = {
   },
 
   async createProduct(userId: string, payload: { title: string; description?: string; vendor?: string; productType?: string; status?: string; tags?: string[]; variants: Array<{ title: string; price: string; sku?: string }> }) {
-    await this.ensureConfigured();
-    const data = await shopifyClient.request<{
+    const { data } = await executeShopifyRequest<{
       productCreate: { product: ShopifyProductNode; userErrors: Array<{ message: string }> };
-    }>(
+    }>(userId,
       `
       mutation CreateProduct($product: ProductCreateInput!) {
         productCreate(product: $product) {
@@ -267,8 +535,7 @@ export const shopifyService = {
             optionValues: [{ name: variant.title, optionName: 'Title' }]
           }))
         }
-      }
-    );
+      });
 
     if (data.productCreate.userErrors.length) {
       throw new ApiError(httpStatus.BAD_REQUEST, data.productCreate.userErrors[0]?.message ?? 'Shopify product creation failed');
@@ -281,6 +548,7 @@ export const shopifyService = {
       { upsert: true, new: true }
     );
 
+    await marketplaceConnectionService.markShopifySynced(userId);
     await syncLogService.create({
       userId,
       entityType: 'product',
@@ -294,10 +562,9 @@ export const shopifyService = {
   },
 
   async updateProduct(userId: string, shopifyProductId: string, payload: Record<string, unknown>) {
-    await this.ensureConfigured();
-    const data = await shopifyClient.request<{
+    const { data } = await executeShopifyRequest<{
       productUpdate: { product: ShopifyProductNode; userErrors: Array<{ message: string }> };
-    }>(
+    }>(userId,
       `
       mutation UpdateProduct($product: ProductUpdateInput!) {
         productUpdate(product: $product) {
@@ -338,8 +605,7 @@ export const shopifyService = {
           status: payload.status,
           tags: payload.tags
         }
-      }
-    );
+      });
 
     if (data.productUpdate.userErrors.length) {
       throw new ApiError(httpStatus.BAD_REQUEST, data.productUpdate.userErrors[0]?.message ?? 'Shopify product update failed');
@@ -352,14 +618,14 @@ export const shopifyService = {
       { upsert: true, new: true }
     );
 
+    await marketplaceConnectionService.markShopifySynced(userId);
     return data.productUpdate.product;
   },
 
   async updateProductPrice(userId: string, shopifyProductId: string, payload: { variantId: string; price: string; compareAtPrice?: string }) {
-    await this.ensureConfigured();
-    const data = await shopifyClient.request<{
+    const { data } = await executeShopifyRequest<{
       productVariantsBulkUpdate: { productVariants: Array<{ id: string; price?: string; compareAtPrice?: string }>; userErrors: Array<{ message: string }> };
-    }>(
+    }>(userId,
       `
       mutation UpdateProductPrice($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
         productVariantsBulkUpdate(productId: $productId, variants: $variants) {
@@ -375,8 +641,7 @@ export const shopifyService = {
       {
         productId: shopifyProductId,
         variants: [{ id: payload.variantId, price: payload.price, compareAtPrice: payload.compareAtPrice }]
-      }
-    );
+      });
 
     if (data.productVariantsBulkUpdate.userErrors.length) {
       throw new ApiError(httpStatus.BAD_REQUEST, data.productVariantsBulkUpdate.userErrors[0]?.message ?? 'Shopify price update failed');
@@ -393,17 +658,17 @@ export const shopifyService = {
       }
     );
 
+    await marketplaceConnectionService.markShopifySynced(userId);
     return data.productVariantsBulkUpdate.productVariants[0];
   },
 
-  async getOrders() {
-    await this.ensureConfigured();
-    const data = await shopifyClient.request<{ orders: { nodes: ShopifyOrderNode[] } }>(ordersQuery);
+  async getOrders(userId: string) {
+    const { data } = await executeShopifyRequest<{ orders: { nodes: ShopifyOrderNode[] } }>(userId, ordersQuery);
     return data.orders.nodes;
   },
 
   async importOrders(userId: string) {
-    const orders = await this.getOrders();
+    const orders = await this.getOrders(userId);
 
     for (const orderNode of orders) {
       const mapped = shopifyMapper.toLocalOrder(userId, orderNode);
@@ -414,6 +679,7 @@ export const shopifyService = {
       );
     }
 
+    await marketplaceConnectionService.markShopifySynced(userId);
     await syncLogService.create({
       userId,
       entityType: 'order',
@@ -425,17 +691,17 @@ export const shopifyService = {
     return { count: orders.length };
   },
 
-  async getLocations() {
-    await this.ensureConfigured();
-    const data = await shopifyClient.request<{ locations: { nodes: Array<{ id: string; name: string; address?: { formatted?: string[] } }> } }>(
+  async getLocations(userId: string) {
+    const { data } = await executeShopifyRequest<{ locations: { nodes: Array<{ id: string; name: string; address?: { formatted?: string[] } }> } }>(
+      userId,
       `query { locations(first: 20) { nodes { id name address { formatted } } } }`
     );
 
     return data.locations.nodes;
   },
 
-  async getInventory() {
-    const products = await this.getProducts();
+  async getInventory(userId: string) {
+    const products = await this.getProducts(userId);
     return products.flatMap((productNode) =>
       (productNode.variants?.nodes ?? []).flatMap((variant) => {
         const levels = variant.inventoryItem?.inventoryLevels?.nodes ?? [];
@@ -469,10 +735,9 @@ export const shopifyService = {
   },
 
   async updateInventoryQuantity(userId: string, inventoryItemId: string, payload: { locationId: string; quantity: number }) {
-    await this.ensureConfigured();
-    const data = await shopifyClient.request<{
+    const { data } = await executeShopifyRequest<{
       inventorySetQuantities: { inventoryAdjustmentGroup: { createdAt: string } | null; userErrors: Array<{ message: string }> };
-    }>(
+    }>(userId,
       `
       mutation SetInventory($input: InventorySetQuantitiesInput!) {
         inventorySetQuantities(input: $input) {
@@ -487,8 +752,7 @@ export const shopifyService = {
           reason: 'correction',
           quantities: [{ inventoryItemId, locationId: payload.locationId, quantity: payload.quantity }]
         }
-      }
-    );
+      });
 
     if (data.inventorySetQuantities.userErrors.length) {
       throw new ApiError(httpStatus.BAD_REQUEST, data.inventorySetQuantities.userErrors[0]?.message ?? 'Shopify inventory update failed');
@@ -499,6 +763,7 @@ export const shopifyService = {
       { $set: { availableQuantity: payload.quantity, lastSyncedAt: new Date() } }
     );
 
+    await marketplaceConnectionService.markShopifySynced(userId);
     await syncLogService.create({
       userId,
       entityType: 'inventory',

@@ -8,6 +8,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(5000),
   API_PREFIX: z.string().min(1).default('/api/v1'),
   MONGODB_URI: z.string().min(1),
+  MONGODB_DNS_SERVERS: z.string().optional(),
   JWT_ACCESS_SECRET: z.string().min(1),
   JWT_REFRESH_SECRET: z.string().min(1),
   JWT_ACCESS_EXPIRES_IN: z.string().min(1).default('15m'),
@@ -25,7 +26,11 @@ const envSchema = z.object({
   SHOPIFY_API_VERSION: z.string().min(1).default('2026-04'),
   SHOPIFY_CLIENT_ID: z.string().min(1).optional(),
   SHOPIFY_CLIENT_SECRET: z.string().min(1).optional(),
-  SHOPIFY_ADMIN_ACCESS_TOKEN: z.string().min(1).optional()
+  SHOPIFY_APP_URL: z.string().url().optional(),
+  SHOPIFY_REDIRECT_URI: z.string().url().optional(),
+  SHOPIFY_ADMIN_ACCESS_TOKEN: z.string().min(1).optional(),
+  FRONTEND_URL: z.string().url().optional(),
+  ENCRYPTION_SECRET: z.string().min(32)
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
