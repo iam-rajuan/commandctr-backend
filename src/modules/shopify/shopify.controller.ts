@@ -8,8 +8,14 @@ const getParam = (value: string | string[] | undefined): string => (Array.isArra
 
 export const shopifyController = {
   connect: asyncHandler(async (req, res) => {
-    const url = await shopifyService.getConnectUrl(req.user!.userId);
+    const url = await shopifyService.createShopifyConnectUrl(req.user!.userId);
     res.redirect(url);
+  }),
+  connectUrl: asyncHandler(async (req, res) => {
+    const connectUrl = await shopifyService.createShopifyConnectUrl(req.user!.userId);
+    res.status(httpStatus.OK).json(
+      ApiResponse.success('Shopify connect URL generated successfully', { connectUrl })
+    );
   }),
   callback: asyncHandler(async (req, res) => {
     await shopifyService.handleOAuthCallback(req, res);

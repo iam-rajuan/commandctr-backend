@@ -11,6 +11,7 @@ export const shopifyRouter = Router();
 shopifyRouter.get('/callback', shopifyController.callback);
 shopifyRouter.use(authMiddleware);
 shopifyRouter.get('/connect', shopifyController.connect);
+shopifyRouter.get('/connect-url', shopifyController.connectUrl);
 shopifyRouter.post('/disconnect', shopifyController.disconnect);
 shopifyRouter.get('/status', shopifyController.status);
 shopifyRouter.get('/shop', shopifyController.shop);

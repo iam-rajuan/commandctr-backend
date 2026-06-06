@@ -204,20 +204,32 @@ const consumeOAuthState = (state: string) => {
   return entry.userId;
 };
 
-const buildShopifyHmacMessage = (query: Request['query']) =>
-  Object.keys(query)
-    .filter((key) => key !== 'hmac' && key !== 'signature')
-    .sort()
-    .map((key) => `${key}=${getSingleQueryValue(query[key])}`)
-    .join('&');
+const buildShopifyHmacMessage = (req: Request) => {
+  const requestUrl = new URL(req.originalUrl, 'http://localhost');
+  const pairs = Array.from(requestUrl.searchParams.entries())
+    .filter(([key]) => key !== 'hmac' && key !== 'signature')
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) => {
+      if (leftKey === rightKey) {
+        return leftValue.localeCompare(rightValue);
+      }
 
-const isValidShopifyHmac = (query: Request['query']) => {
-  const hmac = getSingleQueryValue(query.hmac);
+      return leftKey.localeCompare(rightKey);
+    });
+
+  return pairs
+    .map(([key, value]) => `${key}=${value.replace(/%/g, '%25').replace(/&/g, '%26').replace(/=/g, '%3D')}`)
+    .join('&');
+};
+
+const isValidShopifyHmac = (req: Request) => {
+  const hmac = getSingleQueryValue(req.query.hmac);
   if (!hmac || !env.SHOPIFY_CLIENT_SECRET) {
     return false;
   }
 
-  const digest = createHmac('sha256', env.SHOPIFY_CLIENT_SECRET).update(buildShopifyHmacMessage(query)).digest('hex');
+  const digest = createHmac('sha256', env.SHOPIFY_CLIENT_SECRET)
+    .update(buildShopifyHmacMessage(req))
+    .digest('hex');
 
   try {
     return timingSafeEqual(Buffer.from(digest, 'utf8'), Buffer.from(hmac, 'utf8'));
@@ -226,12 +238,12 @@ const isValidShopifyHmac = (query: Request['query']) => {
   }
 };
 
-const buildFrontendRedirectUrl = (params: Record<string, string>) => {
+const buildFrontendRedirectUrl = (path: string, params: Record<string, string>) => {
   if (!env.FRONTEND_URL) {
     return null;
   }
 
-  const url = new URL(env.FRONTEND_URL);
+  const url = new URL(path, env.FRONTEND_URL.endsWith('/') ? env.FRONTEND_URL : `${env.FRONTEND_URL}/`);
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.set(key, value);
   }
@@ -327,7 +339,7 @@ export const shopifyService = {
     return env.SHOPIFY_SHOP_DOMAIN && env.SHOPIFY_ADMIN_ACCESS_TOKEN ? 'fallback_configured' : 'not_connected';
   },
 
-  async getConnectUrl(userId: string) {
+  async createShopifyConnectUrl(userId: string) {
     requireOAuthConfig();
 
     const state = createOAuthState(userId);
@@ -340,55 +352,75 @@ export const shopifyService = {
     return url.toString();
   },
 
+  async getConnectUrl(userId: string) {
+    return this.createShopifyConnectUrl(userId);
+  },
+
   async handleOAuthCallback(req: Request, res: Response) {
-    const shop = getSingleQueryValue(req.query.shop).toLowerCase();
-    const code = getSingleQueryValue(req.query.code);
-    const state = getSingleQueryValue(req.query.state);
+    try {
+      const shop = getSingleQueryValue(req.query.shop).toLowerCase();
+      const code = getSingleQueryValue(req.query.code);
+      const state = getSingleQueryValue(req.query.state);
 
-    if (!shop || !code || !state || !getSingleQueryValue(req.query.hmac)) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Missing required Shopify OAuth callback parameters');
-    }
-
-    if (!isValidShopifyHmac(req.query)) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Shopify callback HMAC validation failed');
-    }
-
-    const userId = consumeOAuthState(state);
-    const { accessToken, scopes } = await exchangeOAuthCodeForToken(shop, code);
-    const encryptedToken = encryptionUtils.encrypt(accessToken);
-
-    await marketplaceConnectionService.upsertShopifyConnection({
-      userId,
-      shopDomain: shop,
-      accessTokenEncrypted: encryptedToken,
-      scopes,
-      status: 'connected',
-      connectedAt: new Date(),
-      disconnectedAt: undefined,
-      lastCheckedAt: new Date()
-    });
-
-    const redirectUrl = buildFrontendRedirectUrl({
-      marketplace: 'shopify',
-      status: 'connected',
-      shop
-    });
-
-    if (redirectUrl) {
-      res.redirect(redirectUrl);
-      return;
-    }
-
-    res.status(httpStatus.OK).json({
-      success: true,
-      message: 'Shopify store connected successfully',
-      data: {
-        marketplace: 'shopify',
-        shopDomain: shop,
-        status: 'connected',
-        scopes
+      if (!shop || !code || !state || !getSingleQueryValue(req.query.hmac)) {
+        throw new ApiError(httpStatus.BAD_REQUEST, 'Missing required Shopify OAuth callback parameters');
       }
-    });
+
+      if (!isValidShopifyHmac(req)) {
+        throw new ApiError(httpStatus.BAD_REQUEST, 'Shopify callback HMAC validation failed');
+      }
+
+      const userId = consumeOAuthState(state);
+      const { accessToken, scopes } = await exchangeOAuthCodeForToken(shop, code);
+      const encryptedToken = encryptionUtils.encrypt(accessToken);
+
+      await marketplaceConnectionService.upsertShopifyConnection({
+        userId,
+        shopDomain: shop,
+        accessTokenEncrypted: encryptedToken,
+        scopes,
+        status: 'connected',
+        connectedAt: new Date(),
+        disconnectedAt: undefined,
+        lastCheckedAt: new Date()
+      });
+
+      const redirectUrl = buildFrontendRedirectUrl('/integration', {
+        marketplace: 'shopify',
+        status: 'connected',
+        shop
+      });
+
+      if (redirectUrl) {
+        res.redirect(redirectUrl);
+        return;
+      }
+
+      res.status(httpStatus.OK).json({
+        success: true,
+        message: 'Shopify store connected successfully',
+        data: {
+          marketplace: 'shopify',
+          shopDomain: shop,
+          status: 'connected',
+          scopes
+        }
+      });
+    } catch (error) {
+      const safeMessage = error instanceof ApiError ? error.message : 'Shopify connection failed';
+      const redirectUrl = buildFrontendRedirectUrl('/integration', {
+        marketplace: 'shopify',
+        status: 'error',
+        message: safeMessage
+      });
+
+      if (redirectUrl) {
+        res.redirect(redirectUrl);
+        return;
+      }
+
+      throw error;
+    }
   },
 
   async disconnect(userId: string) {
@@ -423,6 +455,15 @@ export const shopifyService = {
           source: 'none',
           shop: null,
           connection: baseConnection
+        };
+      }
+
+      if (!connection && error instanceof ApiError) {
+        return {
+          connected: false,
+          source: 'none',
+          shop: null,
+          connection: null
         };
       }
 

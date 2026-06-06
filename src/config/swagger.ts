@@ -97,6 +97,30 @@ const spec = swaggerJSDoc({
           responses: { '302': { description: 'Redirects to Shopify OAuth authorize screen' } }
         }
       },
+      '/api/v1/shopify/connect-url': {
+        get: {
+          tags: ['Shopify'],
+          summary: 'Generate Shopify OAuth connect URL',
+          description: 'Protected endpoint for the frontend. Call this endpoint with Bearer auth, then set window.location.href to the returned connectUrl.',
+          security: bearerSecurity,
+          responses: {
+            '200': {
+              description: 'OK',
+              content: {
+                'application/json': {
+                  example: {
+                    success: true,
+                    message: 'Shopify connect URL generated successfully',
+                    data: {
+                      connectUrl: 'https://your-store.myshopify.com/admin/oauth/authorize?...'
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       '/api/v1/shopify/callback': {
         get: {
           tags: ['Shopify'],
@@ -108,7 +132,7 @@ const spec = swaggerJSDoc({
             { name: 'hmac', in: 'query', required: true, schema: { type: 'string' } },
             { name: 'state', in: 'query', required: true, schema: { type: 'string' } }
           ],
-          responses: { '200': { description: 'Shopify connection established' }, '302': { description: 'Redirects to frontend success URL if configured' } }
+          responses: { '200': { description: 'Shopify connection established' }, '302': { description: 'Redirects to /integration with success or error query params if FRONTEND_URL is configured' } }
         }
       },
       '/api/v1/shopify/disconnect': { post: { tags: ['Shopify'], summary: 'Disconnect Shopify store', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
