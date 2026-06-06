@@ -81,6 +81,24 @@ type ResolvedShopifyAccess = {
   source: 'marketplace_connection' | 'env_fallback';
 };
 
+const isConfiguredShopifyFallbackToken = (token: string | undefined) => {
+  if (!token) {
+    return false;
+  }
+
+  const normalized = token.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return ![
+    'your_shopify_admin_access_token',
+    'replace-me',
+    'changeme',
+    'change-me'
+  ].includes(normalized);
+};
+
 const SHOPIFY_SCOPES = [
   'read_customers',
   'read_fulfillments',
@@ -366,10 +384,14 @@ const resolveShopifyAccess = async (userId: string): Promise<ResolvedShopifyAcce
     };
   }
 
-  if (env.SHOPIFY_SHOP_DOMAIN && env.SHOPIFY_ADMIN_ACCESS_TOKEN) {
+  if (connection) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Shopify store is not connected.');
+  }
+
+  if (env.SHOPIFY_SHOP_DOMAIN && isConfiguredShopifyFallbackToken(env.SHOPIFY_ADMIN_ACCESS_TOKEN)) {
     return {
       shopDomain: env.SHOPIFY_SHOP_DOMAIN,
-      accessToken: env.SHOPIFY_ADMIN_ACCESS_TOKEN,
+      accessToken: env.SHOPIFY_ADMIN_ACCESS_TOKEN!,
       source: 'env_fallback'
     };
   }
@@ -406,7 +428,13 @@ export const shopifyService = {
       return connection.status;
     }
 
-    return env.SHOPIFY_SHOP_DOMAIN && env.SHOPIFY_ADMIN_ACCESS_TOKEN ? 'fallback_configured' : 'not_connected';
+    if (connection) {
+      return 'not_connected';
+    }
+
+    return env.SHOPIFY_SHOP_DOMAIN && isConfiguredShopifyFallbackToken(env.SHOPIFY_ADMIN_ACCESS_TOKEN)
+      ? 'fallback_configured'
+      : 'not_connected';
   },
 
   async createShopifyConnectUrl(userId: string) {
