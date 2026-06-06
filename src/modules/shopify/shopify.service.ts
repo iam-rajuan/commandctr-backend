@@ -2,6 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { Request, Response } from 'express';
 
 import { env } from '@/config/env';
+import { logger } from '@/config/logger';
 import { httpStatus } from '@/constants/http.constant';
 import { marketplaceConnectionService } from '@/modules/marketplace-connections/marketplace-connection.service';
 import { InventoryModel } from '@/modules/inventory/inventory.model';
@@ -204,38 +205,107 @@ const consumeOAuthState = (state: string) => {
   return entry.userId;
 };
 
-const buildShopifyHmacMessage = (req: Request) => {
-  const requestUrl = new URL(req.originalUrl, 'http://localhost');
-  const pairs = Array.from(requestUrl.searchParams.entries())
-    .filter(([key]) => key !== 'hmac' && key !== 'signature')
-    .sort(([leftKey, leftValue], [rightKey, rightValue]) => {
-      if (leftKey === rightKey) {
-        return leftValue.localeCompare(rightValue);
-      }
+const getRawQueryString = (req: Request) => {
+  const queryStart = req.originalUrl.indexOf('?');
+  return queryStart >= 0 ? req.originalUrl.slice(queryStart + 1) : '';
+};
 
-      return leftKey.localeCompare(rightKey);
+const parseRawQueryParams = (rawQuery: string) =>
+  rawQuery
+    .split('&')
+    .filter(Boolean)
+    .map((entry) => {
+      const separatorIndex = entry.indexOf('=');
+      const rawKey = separatorIndex >= 0 ? entry.slice(0, separatorIndex) : entry;
+      const rawValue = separatorIndex >= 0 ? entry.slice(separatorIndex + 1) : '';
+      const decodedKey = decodeURIComponent(rawKey.replace(/\+/g, '%20'));
+
+      return {
+        rawKey,
+        rawValue,
+        decodedKey
+      };
     });
 
-  return pairs
-    .map(([key, value]) => `${key}=${value.replace(/%/g, '%25').replace(/&/g, '%26').replace(/=/g, '%3D')}`)
-    .join('&');
+const buildShopifyHmacMessage = (req: Request) => {
+  const params = parseRawQueryParams(getRawQueryString(req))
+    .filter(({ decodedKey }) => decodedKey !== 'hmac' && decodedKey !== 'signature')
+    .sort((left, right) => {
+      if (left.decodedKey === right.decodedKey) {
+        return left.rawValue.localeCompare(right.rawValue);
+      }
+
+      return left.decodedKey.localeCompare(right.decodedKey);
+    });
+
+  return params.map(({ rawKey, rawValue }) => `${rawKey}=${rawValue}`).join('&');
+};
+
+const logShopifyHmacDebug = (details: {
+  hasClientSecret: boolean;
+  keys: string[];
+  generatedHmac: string;
+  receivedHmac: string;
+  isValid: boolean;
+}) => {
+  if (env.NODE_ENV !== 'development') {
+    return;
+  }
+
+  logger.info(
+    {
+      hasClientSecret: details.hasClientSecret,
+      callbackKeys: details.keys,
+      generatedHmacPrefix: details.generatedHmac.slice(0, 6),
+      receivedHmacPrefix: details.receivedHmac.slice(0, 6),
+      isValid: details.isValid
+    },
+    'Shopify callback HMAC validation debug'
+  );
 };
 
 const isValidShopifyHmac = (req: Request) => {
-  const hmac = getSingleQueryValue(req.query.hmac);
+  const rawParams = parseRawQueryParams(getRawQueryString(req));
+  const filteredParams = rawParams.filter(
+    ({ decodedKey }) => decodedKey !== 'hmac' && decodedKey !== 'signature'
+  );
+  const hmac = getSingleQueryValue(req.query.hmac).toLowerCase();
+
   if (!hmac || !env.SHOPIFY_CLIENT_SECRET) {
+    logShopifyHmacDebug({
+      hasClientSecret: Boolean(env.SHOPIFY_CLIENT_SECRET),
+      keys: filteredParams.map(({ decodedKey }) => decodedKey).sort((left, right) => left.localeCompare(right)),
+      generatedHmac: '',
+      receivedHmac: hmac,
+      isValid: false
+    });
+
     return false;
   }
 
+  const message = buildShopifyHmacMessage(req);
   const digest = createHmac('sha256', env.SHOPIFY_CLIENT_SECRET)
-    .update(buildShopifyHmacMessage(req))
-    .digest('hex');
+    .update(message)
+    .digest('hex')
+    .toLowerCase();
+
+  let isValid = false;
 
   try {
-    return timingSafeEqual(Buffer.from(digest, 'utf8'), Buffer.from(hmac, 'utf8'));
+    isValid = timingSafeEqual(Buffer.from(digest, 'utf8'), Buffer.from(hmac, 'utf8'));
   } catch {
-    return false;
+    isValid = false;
   }
+
+  logShopifyHmacDebug({
+    hasClientSecret: true,
+    keys: filteredParams.map(({ decodedKey }) => decodedKey).sort((left, right) => left.localeCompare(right)),
+    generatedHmac: digest,
+    receivedHmac: hmac,
+    isValid
+  });
+
+  return isValid;
 };
 
 const buildFrontendRedirectUrl = (path: string, params: Record<string, string>) => {
