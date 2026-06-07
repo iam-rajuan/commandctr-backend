@@ -688,6 +688,32 @@ const resolveShopifyCategoryId = async (userId: string, category: string | undef
   }
 };
 
+const getStoredShopifyScopes = async (userId: string) => {
+  const connection = await marketplaceConnectionService.getShopifyConnection(userId);
+  if (!connection?.scopes?.length) {
+    return null;
+  }
+
+  return new Set(connection.scopes.map((scope) => scope.trim()).filter(Boolean));
+};
+
+const canManageShopifyPublications = async (userId: string, shouldPublish: boolean) => {
+  const scopes = await getStoredShopifyScopes(userId);
+  if (!scopes) {
+    return { allowed: true, missingScopes: [] as string[] };
+  }
+
+  const requiredScopes = shouldPublish
+    ? ['read_publications', 'write_publications']
+    : ['read_publications'];
+  const missingScopes = requiredScopes.filter((scope) => !scopes.has(scope));
+
+  return {
+    allowed: missingScopes.length === 0,
+    missingScopes
+  };
+};
+
 const syncPrimaryVariantDetails = async (
   userId: string,
   product: ShopifyProductNode,
@@ -839,6 +865,17 @@ const syncShopifyPublicationState = async (
   shouldPublish: boolean,
   warnings: string[]
 ) => {
+  const publicationAccess = await canManageShopifyPublications(userId, shouldPublish);
+  if (!publicationAccess.allowed) {
+    if (shouldPublish) {
+      warnings.push(
+        `Online Store publishing is unavailable for the current Shopify connection. Reconnect Shopify to grant: ${publicationAccess.missingScopes.join(', ')}.`
+      );
+    }
+
+    return false;
+  }
+
   try {
     const publicationId = await getOnlineStorePublicationId(userId);
     if (!publicationId) {
