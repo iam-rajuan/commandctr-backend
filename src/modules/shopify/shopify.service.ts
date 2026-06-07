@@ -37,6 +37,14 @@ type ShopifyVariantNode = {
 
 type ShopifyProductNode = {
   id: string;
+  descriptionHtml?: string;
+  handle?: string;
+  vendor?: string;
+  productType?: string;
+  status?: string;
+  tags?: string[];
+  totalInventory?: number;
+  featuredImage?: { url?: string };
   title: string;
   variants?: {
     nodes?: ShopifyVariantNode[];
@@ -116,39 +124,43 @@ const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 const oauthStateStore = new Map<string, { userId: string; createdAt: number }>();
 
+const productSelection = `
+  id
+  title
+  descriptionHtml
+  handle
+  vendor
+  productType
+  status
+  tags
+  totalInventory
+  featuredImage { url }
+  variants(first: 50) {
+    nodes {
+      id
+      title
+      sku
+      price
+      compareAtPrice
+      inventoryQuantity
+      inventoryItem {
+        id
+        inventoryLevels(first: 5) {
+          nodes {
+            location { id name }
+            quantities(names: ["available"]) { name quantity }
+          }
+        }
+      }
+    }
+  }
+`;
+
 const productsQuery = `
   query GetProducts {
     products(first: 50) {
       nodes {
-        id
-        title
-        descriptionHtml
-        handle
-        vendor
-        productType
-        status
-        tags
-        totalInventory
-        featuredImage { url }
-        variants(first: 20) {
-          nodes {
-            id
-            title
-            sku
-            price
-            compareAtPrice
-            inventoryQuantity
-            inventoryItem {
-              id
-              inventoryLevels(first: 5) {
-                nodes {
-                  location { id name }
-                  quantities(names: ["available"]) { name quantity }
-                }
-              }
-            }
-          }
-        }
+        ${productSelection}
       }
     }
   }
@@ -439,6 +451,107 @@ const executeShopifyRequest = async <T>(userId: string, query: string, variables
   return { access, data };
 };
 
+const fetchShopifyProductById = async (userId: string, productId: string): Promise<ShopifyProductNode> => {
+  const { data } = await executeShopifyRequest<{ product: ShopifyProductNode | null }>(
+    userId,
+    `
+      query GetProduct($id: ID!) {
+        product(id: $id) {
+          ${productSelection}
+        }
+      }
+    `,
+    { id: productId }
+  );
+
+  if (!data.product) {
+    throw new ApiError(httpStatus.BAD_GATEWAY, 'Shopify product was created but could not be fetched afterwards');
+  }
+
+  return data.product;
+};
+
+const upsertLocalShopifyProduct = async (userId: string, product: ShopifyProductNode) => {
+  const mapped = shopifyMapper.toLocalProduct(userId, product);
+  await ProductModel.findOneAndUpdate(
+    { userId, shopifyProductId: mapped.shopifyProductId },
+    { $set: mapped },
+    { upsert: true, new: true }
+  );
+
+  return mapped;
+};
+
+const updateShopifyVariantPrice = async (userId: string, productId: string, variantId: string, price: string) => {
+  const { data } = await executeShopifyRequest<{
+    productVariantsBulkUpdate: {
+      productVariants: Array<{ id: string; price?: string }>;
+      userErrors: Array<{ message: string }>;
+    };
+  }>(
+    userId,
+    `
+      mutation UpdateCreatedVariantPrice($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+        productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+          productVariants {
+            id
+            price
+          }
+          userErrors { message }
+        }
+      }
+    `,
+    {
+      productId,
+      variants: [{ id: variantId, price }]
+    }
+  );
+
+  if (data.productVariantsBulkUpdate.userErrors.length) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      data.productVariantsBulkUpdate.userErrors[0]?.message ?? 'Shopify variant price update failed'
+    );
+  }
+
+  return data.productVariantsBulkUpdate.productVariants[0];
+};
+
+const updateShopifyInventoryItemSku = async (userId: string, inventoryItemId: string, sku: string) => {
+  const { data } = await executeShopifyRequest<{
+    inventoryItemUpdate: {
+      inventoryItem: { id: string; sku?: string } | null;
+      userErrors: Array<{ message: string }>;
+    };
+  }>(
+    userId,
+    `
+      mutation UpdateCreatedVariantSku($id: ID!, $input: InventoryItemInput!) {
+        inventoryItemUpdate(id: $id, input: $input) {
+          inventoryItem {
+            id
+            sku
+          }
+          userErrors { message }
+        }
+      }
+    `,
+    {
+      id: inventoryItemId,
+      input: { sku }
+    }
+  );
+
+  if (data.inventoryItemUpdate.userErrors.length) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      data.inventoryItemUpdate.userErrors[0]?.message ?? 'Shopify variant SKU update failed'
+    );
+  }
+
+  return data.inventoryItemUpdate.inventoryItem;
+};
+
 const requireOAuthConfig = () => {
   if (!env.SHOPIFY_SHOP_DOMAIN || !env.SHOPIFY_CLIENT_ID || !env.SHOPIFY_REDIRECT_URI) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Shopify OAuth environment variables are not fully configured');
@@ -650,6 +763,7 @@ export const shopifyService = {
   },
 
   async createProduct(userId: string, payload: { title: string; description?: string; vendor?: string; productType?: string; status?: string; tags?: string[]; variants: Array<{ title: string; price: string; sku?: string }> }) {
+    const primaryVariant = payload.variants[0];
     const { data } = await executeShopifyRequest<{
       productCreate: { product: ShopifyProductNode; userErrors: Array<{ message: string }> };
     }>(userId,
@@ -657,27 +771,7 @@ export const shopifyService = {
       mutation CreateProduct($product: ProductCreateInput!) {
         productCreate(product: $product) {
           product {
-            id
-            title
-            descriptionHtml
-            handle
-            vendor
-            productType
-            status
-            tags
-            totalInventory
-            featuredImage { url }
-            variants(first: 20) {
-              nodes {
-                id
-                title
-                sku
-                price
-                compareAtPrice
-                inventoryQuantity
-                inventoryItem { id }
-              }
-            }
+            ${productSelection}
           }
           userErrors { message }
         }
@@ -690,13 +784,7 @@ export const shopifyService = {
           vendor: payload.vendor,
           productType: payload.productType,
           status: payload.status,
-          tags: payload.tags ?? [],
-          productOptions: [],
-          variants: payload.variants.map((variant) => ({
-            price: variant.price,
-            inventoryItem: { sku: variant.sku },
-            optionValues: [{ name: variant.title, optionName: 'Title' }]
-          }))
+          tags: payload.tags ?? []
         }
       });
 
@@ -704,12 +792,43 @@ export const shopifyService = {
       throw new ApiError(httpStatus.BAD_REQUEST, data.productCreate.userErrors[0]?.message ?? 'Shopify product creation failed');
     }
 
-    const mapped = shopifyMapper.toLocalProduct(userId, data.productCreate.product);
-    await ProductModel.findOneAndUpdate(
-      { userId, shopifyProductId: mapped.shopifyProductId },
-      { $set: mapped },
-      { upsert: true, new: true }
-    );
+    const createdProduct = data.productCreate.product;
+    const createdVariant = createdProduct.variants?.nodes?.[0];
+
+    if (createdVariant && primaryVariant?.price) {
+      try {
+        await updateShopifyVariantPrice(userId, createdProduct.id, createdVariant.id, primaryVariant.price);
+      } catch (error) {
+        logger.warn(
+          {
+            userId,
+            shopifyProductId: createdProduct.id,
+            shopifyVariantId: createdVariant.id,
+            message: error instanceof Error ? error.message : 'Unknown variant price update failure'
+          },
+          'Shopify product created but default variant price update failed'
+        );
+      }
+    }
+
+    if (createdVariant?.inventoryItem?.id && primaryVariant?.sku) {
+      try {
+        await updateShopifyInventoryItemSku(userId, createdVariant.inventoryItem.id, primaryVariant.sku);
+      } catch (error) {
+        logger.warn(
+          {
+            userId,
+            shopifyProductId: createdProduct.id,
+            inventoryItemId: createdVariant.inventoryItem.id,
+            message: error instanceof Error ? error.message : 'Unknown variant SKU update failure'
+          },
+          'Shopify product created but default variant SKU update failed'
+        );
+      }
+    }
+
+    const finalProduct = await fetchShopifyProductById(userId, createdProduct.id);
+    const mapped = await upsertLocalShopifyProduct(userId, finalProduct);
 
     await marketplaceConnectionService.markShopifySynced(userId);
     await syncLogService.create({
@@ -721,7 +840,7 @@ export const shopifyService = {
       message: 'Created Shopify product successfully'
     });
 
-    return data.productCreate.product;
+    return finalProduct;
   },
 
   async updateProduct(userId: string, shopifyProductId: string, payload: Record<string, unknown>) {

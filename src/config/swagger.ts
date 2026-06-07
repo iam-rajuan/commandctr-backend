@@ -144,6 +144,7 @@ const spec = swaggerJSDoc({
         post: {
           tags: ['Shopify'],
           summary: 'Create Shopify product',
+          description: 'Accepts the frontend variants array for convenience. The backend currently creates the Shopify product first, then applies price and SKU to the default Shopify variant using only the first item from variants.',
           security: bearerSecurity,
           requestBody: { content: { 'application/json': { example: { title: 'Demo product', description: '<p>Demo description</p>', vendor: 'CommandCtr', productType: 'Apparel', status: 'ACTIVE', tags: ['demo'], variants: [{ title: 'Default Title', price: '29.99', sku: 'DEMO-001' }] } } } },
           responses: { '201': { description: 'Created' } }
