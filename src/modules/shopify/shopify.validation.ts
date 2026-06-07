@@ -7,8 +7,11 @@ export const shopifyValidation = {
       description: z.string().optional(),
       vendor: z.string().optional(),
       productType: z.string().optional(),
+      category: z.string().optional(),
       status: z.string().optional(),
       tags: z.array(z.string()).optional(),
+      imagePath: z.string().optional(),
+      publishToOnlineStore: z.boolean().optional(),
       variants: z
         .array(
           z.object({
@@ -26,8 +29,21 @@ export const shopifyValidation = {
       description: z.string().optional(),
       vendor: z.string().optional(),
       productType: z.string().optional(),
+      category: z.string().optional(),
       status: z.string().optional(),
-      tags: z.array(z.string()).optional()
+      tags: z.array(z.string()).optional(),
+      imagePath: z.string().optional(),
+      publishToOnlineStore: z.boolean().optional(),
+      variants: z
+        .array(
+          z.object({
+            title: z.string().min(1),
+            price: z.string().min(1),
+            sku: z.string().optional()
+          })
+        )
+        .min(1)
+        .optional()
     })
   }),
   updatePrice: z.object({

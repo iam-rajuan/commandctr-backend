@@ -9,6 +9,7 @@ import { shopifyValidation } from './shopify.validation';
 export const shopifyRouter = Router();
 
 shopifyRouter.get('/callback', shopifyController.callback);
+shopifyRouter.get('/product-image', shopifyController.productImage);
 shopifyRouter.use(authMiddleware);
 shopifyRouter.get('/connect', shopifyController.connect);
 shopifyRouter.get('/connect-url', shopifyController.connectUrl);

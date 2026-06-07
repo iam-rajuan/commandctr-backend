@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { Request, Response } from 'express';
 
 import { env } from '@/config/env';
@@ -41,6 +41,7 @@ type ShopifyProductNode = {
   handle?: string;
   vendor?: string;
   productType?: string;
+  category?: { id: string; fullName?: string; name?: string };
   status?: string;
   tags?: string[];
   totalInventory?: number;
@@ -48,6 +49,13 @@ type ShopifyProductNode = {
   title: string;
   variants?: {
     nodes?: ShopifyVariantNode[];
+  };
+  media?: {
+    nodes?: Array<{
+      id: string;
+      alt?: string;
+      image?: { url?: string };
+    }>;
   };
 };
 
@@ -89,6 +97,26 @@ type ResolvedShopifyAccess = {
   source: 'marketplace_connection' | 'env_fallback';
 };
 
+type ShopifyProductMutationPayload = {
+  title: string;
+  description?: string;
+  vendor?: string;
+  productType?: string;
+  category?: string;
+  status?: string;
+  tags?: string[];
+  imagePath?: string;
+  publishToOnlineStore?: boolean;
+  variants: Array<{ title: string; price: string; sku?: string }>;
+};
+
+type ShopifyProductMutationResult = {
+  imageUploaded: boolean;
+  product: ShopifyProductNode;
+  publishedToOnlineStore: boolean;
+  warnings: string[];
+};
+
 const isConfiguredShopifyFallbackToken = (token: string | undefined) => {
   if (!token) {
     return false;
@@ -117,7 +145,9 @@ const SHOPIFY_SCOPES = [
   'read_orders',
   'write_orders',
   'read_products',
-  'write_products'
+  'write_products',
+  'read_publications',
+  'write_publications'
 ].join(',');
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
@@ -135,6 +165,15 @@ const productSelection = `
   tags
   totalInventory
   featuredImage { url }
+  media(first: 20) {
+    nodes {
+      ... on MediaImage {
+        id
+        alt
+        image { url }
+      }
+    }
+  }
   variants(first: 50) {
     nodes {
       id
@@ -552,6 +591,326 @@ const updateShopifyInventoryItemSku = async (userId: string, inventoryItemId: st
   return data.inventoryItemUpdate.inventoryItem;
 };
 
+const buildShopifyImageMarker = (imagePath: string) =>
+  `commandctr-shopify-image:${createHash('sha256').update(imagePath).digest('hex').slice(0, 16)}`;
+
+const getFrontendImageProxyUrl = (imagePath: string) => {
+  if (!env.FRONTEND_URL) {
+    return null;
+  }
+
+  const url = new URL('/api/product-ai/image', env.FRONTEND_URL.endsWith('/') ? env.FRONTEND_URL : `${env.FRONTEND_URL}/`);
+  url.searchParams.set('path', imagePath);
+  return url.toString();
+};
+
+const isHttpUrl = (value: string) => /^https?:\/\//i.test(value);
+
+const getPublicShopifyImageUrl = (imagePath: string) => {
+  if (!env.SHOPIFY_APP_URL) {
+    return null;
+  }
+
+  const url = new URL(env.SHOPIFY_APP_URL);
+  url.pathname = `${env.API_PREFIX}/shopify/product-image`;
+  url.searchParams.set('path', imagePath);
+  return url.toString();
+};
+
+const resolveShopifyCategoryId = async (userId: string, category: string | undefined) => {
+  const normalizedCategory = category?.trim();
+  if (!normalizedCategory) {
+    return null;
+  }
+
+  try {
+    const { data } = await executeShopifyRequest<{
+      taxonomy: {
+        categories: {
+          nodes: Array<{
+            id: string;
+            name: string;
+            fullName: string;
+            isLeaf: boolean;
+            isArchived: boolean;
+          }>;
+        };
+      };
+    }>(
+      userId,
+      `
+        query SearchTaxonomyCategories($search: String!) {
+          taxonomy {
+            categories(search: $search, first: 10) {
+              nodes {
+                id
+                name
+                fullName
+                isLeaf
+                isArchived
+              }
+            }
+          }
+        }
+      `,
+      { search: normalizedCategory }
+    );
+
+    const categories = data.taxonomy.categories.nodes.filter((node) => !node.isArchived);
+    if (!categories.length) {
+      return null;
+    }
+
+    const loweredSearch = normalizedCategory.toLowerCase();
+    const exactFullName = categories.find((node) => node.fullName.toLowerCase() === loweredSearch);
+    if (exactFullName) {
+      return exactFullName.id;
+    }
+
+    const exactName = categories.find((node) => node.name.toLowerCase() === loweredSearch);
+    if (exactName) {
+      return exactName.id;
+    }
+
+    const leafMatch = categories.find((node) => node.isLeaf);
+    const fallbackCategory = categories[0]!;
+    return (leafMatch ?? fallbackCategory).id;
+  } catch (error) {
+    logger.warn(
+      {
+        userId,
+        category: normalizedCategory,
+        message: error instanceof Error ? error.message : 'Unknown taxonomy lookup failure'
+      },
+      'Shopify category lookup failed'
+    );
+    return null;
+  }
+};
+
+const syncPrimaryVariantDetails = async (
+  userId: string,
+  product: ShopifyProductNode,
+  primaryVariant: ShopifyProductMutationPayload['variants'][0] | undefined,
+  warnings: string[]
+) => {
+  const createdVariant = product.variants?.nodes?.[0];
+
+  if (createdVariant && primaryVariant?.price) {
+    try {
+      await updateShopifyVariantPrice(userId, product.id, createdVariant.id, primaryVariant.price);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown variant price update failure';
+      warnings.push(`Default variant price was not updated: ${message}`);
+      logger.warn(
+        {
+          userId,
+          shopifyProductId: product.id,
+          shopifyVariantId: createdVariant.id,
+          message
+        },
+        'Shopify product mutation completed but default variant price update failed'
+      );
+    }
+  }
+
+  if (createdVariant?.inventoryItem?.id && primaryVariant?.sku) {
+    try {
+      await updateShopifyInventoryItemSku(userId, createdVariant.inventoryItem.id, primaryVariant.sku);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown variant SKU update failure';
+      warnings.push(`Default variant SKU was not updated: ${message}`);
+      logger.warn(
+        {
+          userId,
+          shopifyProductId: product.id,
+          inventoryItemId: createdVariant.inventoryItem.id,
+          message
+        },
+        'Shopify product mutation completed but default variant SKU update failed'
+      );
+    }
+  }
+};
+
+const syncShopifyProductImage = async (
+  userId: string,
+  product: ShopifyProductNode,
+  imagePath: string | undefined,
+  title: string,
+  warnings: string[]
+) => {
+  if (!imagePath) {
+    warnings.push('No generated Shopify image was provided, so the product was uploaded without media.');
+    return { imageUploaded: false, product };
+  }
+
+  const imageMarker = buildShopifyImageMarker(imagePath);
+  if (product.media?.nodes?.some((node) => node.alt === imageMarker)) {
+    return { imageUploaded: true, product };
+  }
+
+  const originalSource = getPublicShopifyImageUrl(imagePath);
+  if (!originalSource) {
+    warnings.push('Shopify image upload was skipped because SHOPIFY_APP_URL is not configured.');
+    return { imageUploaded: false, product };
+  }
+
+  try {
+    const { data } = await executeShopifyRequest<{
+      productUpdate: { product: ShopifyProductNode; userErrors: Array<{ message: string }> };
+    }>(
+      userId,
+      `
+        mutation AddShopifyProductImage($product: ProductUpdateInput!, $media: [CreateMediaInput!]) {
+          productUpdate(product: $product, media: $media) {
+            product {
+              ${productSelection}
+            }
+            userErrors { message }
+          }
+        }
+      `,
+      {
+        product: { id: product.id },
+        media: [
+          {
+            alt: imageMarker,
+            mediaContentType: 'IMAGE',
+            originalSource
+          }
+        ]
+      }
+    );
+
+    if (data.productUpdate.userErrors.length) {
+      warnings.push(data.productUpdate.userErrors[0]?.message ?? 'Shopify image upload failed.');
+      return { imageUploaded: false, product };
+    }
+
+    return { imageUploaded: true, product: data.productUpdate.product };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown Shopify image upload failure';
+    warnings.push(`Shopify image upload was skipped: ${message}`);
+    logger.warn(
+      {
+        userId,
+        shopifyProductId: product.id,
+        title,
+        imagePath,
+        message
+      },
+      'Shopify product mutation completed but media upload failed'
+    );
+    return { imageUploaded: false, product };
+  }
+};
+
+const getOnlineStorePublicationId = async (userId: string) => {
+  const { data } = await executeShopifyRequest<{
+    publications: {
+      edges: Array<{ node: { id: string; name?: string } }>;
+    };
+  }>(
+    userId,
+    `
+      query GetPublications {
+        publications(first: 20) {
+          edges {
+            node {
+              id
+              name
+            }
+          }
+        }
+      }
+    `
+  );
+
+  const publications = data.publications.edges.map((edge) => edge.node);
+  const onlineStorePublication = publications.find((publication) => publication.name?.toLowerCase().includes('online store'));
+
+  return onlineStorePublication?.id ?? publications[0]?.id ?? null;
+};
+
+const syncShopifyPublicationState = async (
+  userId: string,
+  shopifyProductId: string,
+  shouldPublish: boolean,
+  warnings: string[]
+) => {
+  try {
+    const publicationId = await getOnlineStorePublicationId(userId);
+    if (!publicationId) {
+      warnings.push('No Shopify publication was found for the connected store.');
+      return false;
+    }
+
+    if (shouldPublish) {
+      const { data } = await executeShopifyRequest<{
+        publishablePublish: { userErrors: Array<{ message: string }> };
+      }>(
+        userId,
+        `
+          mutation PublishProductToOnlineStore($id: ID!, $input: [PublicationInput!]!) {
+            publishablePublish(id: $id, input: $input) {
+              userErrors { message }
+            }
+          }
+        `,
+        {
+          id: shopifyProductId,
+          input: [{ publicationId }]
+        }
+      );
+
+      if (data.publishablePublish.userErrors.length) {
+        warnings.push(data.publishablePublish.userErrors[0]?.message ?? 'Shopify Online Store publish failed.');
+        return false;
+      }
+
+      return true;
+    }
+
+    const { data } = await executeShopifyRequest<{
+      publishableUnpublish: { userErrors: Array<{ message: string }> };
+    }>(
+      userId,
+      `
+        mutation UnpublishProductFromOnlineStore($id: ID!, $input: [PublicationInput!]!) {
+          publishableUnpublish(id: $id, input: $input) {
+            userErrors { message }
+          }
+        }
+      `,
+      {
+        id: shopifyProductId,
+        input: [{ publicationId }]
+      }
+    );
+
+    if (data.publishableUnpublish.userErrors.length) {
+      warnings.push(data.publishableUnpublish.userErrors[0]?.message ?? 'Shopify Online Store unpublish failed.');
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown Shopify publication sync failure';
+    warnings.push(`Online Store publish state could not be changed: ${message}`);
+    logger.warn(
+      {
+        userId,
+        shopifyProductId,
+        shouldPublish,
+        message
+      },
+      'Shopify publication sync failed'
+    );
+    return false;
+  }
+};
+
 const requireOAuthConfig = () => {
   if (!env.SHOPIFY_SHOP_DOMAIN || !env.SHOPIFY_CLIENT_ID || !env.SHOPIFY_REDIRECT_URI) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Shopify OAuth environment variables are not fully configured');
@@ -559,6 +918,34 @@ const requireOAuthConfig = () => {
 };
 
 export const shopifyService = {
+  async getProductImageProxy(imagePath: string) {
+    if (!imagePath) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Missing Shopify product image path');
+    }
+
+    const upstreamUrl = isHttpUrl(imagePath) ? imagePath : getFrontendImageProxyUrl(imagePath);
+    if (!upstreamUrl) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'FRONTEND_URL is not configured for Shopify image proxying');
+    }
+
+    const response = await fetch(upstreamUrl, {
+      headers: isHttpUrl(imagePath)
+        ? undefined
+        : {
+            'ngrok-skip-browser-warning': 'true'
+          }
+    });
+
+    if (!response.ok) {
+      throw new ApiError(httpStatus.BAD_GATEWAY, 'Could not load the generated Shopify image');
+    }
+
+    return {
+      contentType: response.headers.get('content-type') ?? 'application/octet-stream',
+      payload: Buffer.from(await response.arrayBuffer())
+    };
+  },
+
   async getConnectionState(userId: string) {
     const connection = await marketplaceConnectionService.getShopifyConnection(userId);
     if (connection?.accessTokenEncrypted) {
@@ -762,8 +1149,13 @@ export const shopifyService = {
     return { count: products.length };
   },
 
-  async createProduct(userId: string, payload: { title: string; description?: string; vendor?: string; productType?: string; status?: string; tags?: string[]; variants: Array<{ title: string; price: string; sku?: string }> }) {
+  async createProduct(userId: string, payload: ShopifyProductMutationPayload): Promise<ShopifyProductMutationResult> {
     const primaryVariant = payload.variants[0];
+    const warnings: string[] = [];
+    const categoryId = await resolveShopifyCategoryId(userId, payload.category);
+    if (payload.category && !categoryId) {
+      warnings.push(`Shopify category could not be matched for "${payload.category}".`);
+    }
     const { data } = await executeShopifyRequest<{
       productCreate: { product: ShopifyProductNode; userErrors: Array<{ message: string }> };
     }>(userId,
@@ -783,6 +1175,7 @@ export const shopifyService = {
           descriptionHtml: payload.description,
           vendor: payload.vendor,
           productType: payload.productType,
+          category: categoryId ?? undefined,
           status: payload.status,
           tags: payload.tags ?? []
         }
@@ -792,42 +1185,14 @@ export const shopifyService = {
       throw new ApiError(httpStatus.BAD_REQUEST, data.productCreate.userErrors[0]?.message ?? 'Shopify product creation failed');
     }
 
-    const createdProduct = data.productCreate.product;
-    const createdVariant = createdProduct.variants?.nodes?.[0];
+    await syncPrimaryVariantDetails(userId, data.productCreate.product, primaryVariant, warnings);
 
-    if (createdVariant && primaryVariant?.price) {
-      try {
-        await updateShopifyVariantPrice(userId, createdProduct.id, createdVariant.id, primaryVariant.price);
-      } catch (error) {
-        logger.warn(
-          {
-            userId,
-            shopifyProductId: createdProduct.id,
-            shopifyVariantId: createdVariant.id,
-            message: error instanceof Error ? error.message : 'Unknown variant price update failure'
-          },
-          'Shopify product created but default variant price update failed'
-        );
-      }
-    }
-
-    if (createdVariant?.inventoryItem?.id && primaryVariant?.sku) {
-      try {
-        await updateShopifyInventoryItemSku(userId, createdVariant.inventoryItem.id, primaryVariant.sku);
-      } catch (error) {
-        logger.warn(
-          {
-            userId,
-            shopifyProductId: createdProduct.id,
-            inventoryItemId: createdVariant.inventoryItem.id,
-            message: error instanceof Error ? error.message : 'Unknown variant SKU update failure'
-          },
-          'Shopify product created but default variant SKU update failed'
-        );
-      }
-    }
-
-    const finalProduct = await fetchShopifyProductById(userId, createdProduct.id);
+    let finalProduct = await fetchShopifyProductById(userId, data.productCreate.product.id);
+    const imageSyncResult = await syncShopifyProductImage(userId, finalProduct, payload.imagePath, payload.title, warnings);
+    finalProduct = imageSyncResult.product;
+    const publishedToOnlineStore = payload.publishToOnlineStore
+      ? await syncShopifyPublicationState(userId, finalProduct.id, true, warnings)
+      : false;
     const mapped = await upsertLocalShopifyProduct(userId, finalProduct);
 
     await marketplaceConnectionService.markShopifySynced(userId);
@@ -840,10 +1205,20 @@ export const shopifyService = {
       message: 'Created Shopify product successfully'
     });
 
-    return finalProduct;
+    return {
+      imageUploaded: imageSyncResult.imageUploaded,
+      product: finalProduct,
+      publishedToOnlineStore,
+      warnings
+    };
   },
 
-  async updateProduct(userId: string, shopifyProductId: string, payload: Record<string, unknown>) {
+  async updateProduct(userId: string, shopifyProductId: string, payload: Partial<ShopifyProductMutationPayload>): Promise<ShopifyProductMutationResult> {
+    const warnings: string[] = [];
+    const categoryId = await resolveShopifyCategoryId(userId, payload.category);
+    if (payload.category && !categoryId) {
+      warnings.push(`Shopify category could not be matched for "${payload.category}".`);
+    }
     const { data } = await executeShopifyRequest<{
       productUpdate: { product: ShopifyProductNode; userErrors: Array<{ message: string }> };
     }>(userId,
@@ -876,7 +1251,7 @@ export const shopifyService = {
           userErrors { message }
         }
       }
-    `,
+      `,
       {
         product: {
           id: shopifyProductId,
@@ -884,6 +1259,7 @@ export const shopifyService = {
           descriptionHtml: payload.description,
           vendor: payload.vendor,
           productType: payload.productType,
+          category: categoryId ?? undefined,
           status: payload.status,
           tags: payload.tags
         }
@@ -893,15 +1269,32 @@ export const shopifyService = {
       throw new ApiError(httpStatus.BAD_REQUEST, data.productUpdate.userErrors[0]?.message ?? 'Shopify product update failed');
     }
 
-    const mapped = shopifyMapper.toLocalProduct(userId, data.productUpdate.product);
-    await ProductModel.findOneAndUpdate(
-      { userId, shopifyProductId },
-      { $set: mapped },
-      { upsert: true, new: true }
+    await syncPrimaryVariantDetails(userId, data.productUpdate.product, payload.variants?.[0], warnings);
+
+    let finalProduct = await fetchShopifyProductById(userId, shopifyProductId);
+    const imageSyncResult = await syncShopifyProductImage(
+      userId,
+      finalProduct,
+      payload.imagePath,
+      payload.title ?? finalProduct.title,
+      warnings
     );
+    finalProduct = imageSyncResult.product;
+
+    const publishedToOnlineStore =
+      typeof payload.publishToOnlineStore === 'boolean'
+        ? await syncShopifyPublicationState(userId, shopifyProductId, payload.publishToOnlineStore, warnings)
+        : false;
+
+    await upsertLocalShopifyProduct(userId, finalProduct);
 
     await marketplaceConnectionService.markShopifySynced(userId);
-    return data.productUpdate.product;
+    return {
+      imageUploaded: imageSyncResult.imageUploaded,
+      product: finalProduct,
+      publishedToOnlineStore,
+      warnings
+    };
   },
 
   async updateProductPrice(userId: string, shopifyProductId: string, payload: { variantId: string; price: string; compareAtPrice?: string }) {

@@ -4,7 +4,14 @@ import { asyncHandler } from '@/shared/async-handler';
 
 import { shopifyService } from './shopify.service';
 
-const getParam = (value: string | string[] | undefined): string => (Array.isArray(value) ? value[0] ?? '' : value ?? '');
+const getParam = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    const firstValue = value[0];
+    return typeof firstValue === 'string' ? firstValue : '';
+  }
+
+  return typeof value === 'string' ? value : '';
+};
 
 export const shopifyController = {
   connect: asyncHandler(async (req, res) => {
@@ -19,6 +26,12 @@ export const shopifyController = {
   }),
   callback: asyncHandler(async (req, res) => {
     await shopifyService.handleOAuthCallback(req, res);
+  }),
+  productImage: asyncHandler(async (req, res) => {
+    const result = await shopifyService.getProductImageProxy(getParam(req.query.path));
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(httpStatus.OK).send(result.payload);
   }),
   disconnect: asyncHandler(async (req, res) => {
     const result = await shopifyService.disconnect(req.user!.userId);
