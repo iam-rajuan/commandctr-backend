@@ -88,6 +88,62 @@ const spec = swaggerJSDoc({
       '/api/v1/admin/users/{id}/block': { patch: { tags: ['Admin'], summary: 'Block user', security: bearerSecurity, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'OK' } } } },
       '/api/v1/admin/users/{id}/unblock': { patch: { tags: ['Admin'], summary: 'Unblock user', security: bearerSecurity, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'OK' } } } },
       '/api/v1/dashboard/overview': { get: { tags: ['Dashboard'], summary: 'Dashboard overview', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
+      '/api/v1/wallet/overview': {
+        get: {
+          tags: ['Wallet'],
+          summary: 'Read-only wallet overview based on imported Shopify orders',
+          description:
+            'Returns Shopify revenue metrics from local imported orders. This is not a payout balance, bank balance, or Shopify Payments ledger.',
+          security: bearerSecurity,
+          responses: {
+            '200': {
+              description: 'OK',
+              content: {
+                'application/json': {
+                  example: {
+                    success: true,
+                    message: 'Wallet overview retrieved successfully',
+                    data: {
+                      currency: 'GBP',
+                      totalRevenue: 469,
+                      paidRevenue: 469,
+                      pendingRevenue: 199.91,
+                      refundedRevenue: 0,
+                      orderCount: 4,
+                      paidOrderCount: 3,
+                      pendingOrderCount: 1,
+                      platformBalances: [
+                        {
+                          platform: 'shopify',
+                          label: 'Shopify Revenue',
+                          amount: 469,
+                          currency: 'GBP',
+                          status: 'Connected',
+                          isConnected: true
+                        }
+                      ],
+                      recentActivity: [
+                        {
+                          id: 'order-id',
+                          type: 'ORDER_PAID',
+                          title: 'Shopify order paid',
+                          subtitle: '#1004',
+                          amount: 115.14,
+                          currency: 'GBP',
+                          status: 'paid',
+                          occurredAt: '2026-06-09T10:00:00.000Z'
+                        }
+                      ],
+                      notice:
+                        'Wallet totals are based on imported Shopify orders. Shopify payouts, fees, refunds, and bank balance are not included yet.'
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       '/api/v1/shopify/connect': {
         get: {
           tags: ['Shopify'],
