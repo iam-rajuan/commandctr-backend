@@ -510,6 +510,42 @@ const fetchShopifyProductById = async (userId: string, productId: string): Promi
   return data.product;
 };
 
+const fetchShopifyAvailableQuantity = async (userId: string, inventoryItemId: string, locationId: string) => {
+  const { data } = await executeShopifyRequest<{
+    inventoryItem: {
+      inventoryLevel?: {
+        quantities?: Array<{ name?: string; quantity?: number }>;
+      } | null;
+    } | null;
+  }>(
+    userId,
+    `
+      query GetInventoryLevel($inventoryItemId: ID!, $locationId: ID!) {
+        inventoryItem(id: $inventoryItemId) {
+          inventoryLevel(locationId: $locationId) {
+            quantities(names: ["available"]) {
+              name
+              quantity
+            }
+          }
+        }
+      }
+    `,
+    {
+      inventoryItemId,
+      locationId
+    }
+  );
+
+  const quantity = data.inventoryItem?.inventoryLevel?.quantities?.find((entry) => entry.name === 'available')?.quantity;
+
+  if (typeof quantity !== 'number') {
+    throw new ApiError(httpStatus.BAD_GATEWAY, 'Could not determine the current Shopify inventory quantity for this location');
+  }
+
+  return quantity;
+};
+
 const upsertLocalShopifyProduct = async (userId: string, product: ShopifyProductNode) => {
   const mapped = shopifyMapper.toLocalProduct(userId, product);
   const localProduct = await ProductModel.findOneAndUpdate(
@@ -1556,22 +1592,32 @@ export const shopifyService = {
   },
 
   async updateInventoryQuantity(userId: string, inventoryItemId: string, payload: { locationId: string; quantity: number }) {
+    const currentQuantity = await fetchShopifyAvailableQuantity(userId, inventoryItemId, payload.locationId);
+    const idempotencyKey = randomBytes(16).toString('hex');
+
     const { data } = await executeShopifyRequest<{
       inventorySetQuantities: { inventoryAdjustmentGroup: { createdAt: string } | null; userErrors: Array<{ message: string }> };
     }>(userId,
       `
-      mutation SetInventory($input: InventorySetQuantitiesInput!) {
-        inventorySetQuantities(input: $input) {
+      mutation SetInventory($input: InventorySetQuantitiesInput!, $idempotencyKey: String!) {
+        inventorySetQuantities(input: $input) @idempotent(key: $idempotencyKey) {
           inventoryAdjustmentGroup { createdAt }
           userErrors { message }
         }
       }
     `,
       {
+        idempotencyKey,
         input: {
           name: 'available',
           reason: 'correction',
-          quantities: [{ inventoryItemId, locationId: payload.locationId, quantity: payload.quantity }]
+          referenceDocumentUri: `gid://commandctr/InventoryAdjustment/${inventoryItemId}`,
+          quantities: [{
+            inventoryItemId,
+            locationId: payload.locationId,
+            quantity: payload.quantity,
+            changeFromQuantity: currentQuantity
+          }]
         }
       });
 
