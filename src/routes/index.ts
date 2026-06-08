@@ -11,6 +11,7 @@ import { productRouter } from '@/modules/products/product.route';
 import { shopifyRouter } from '@/modules/shopify/shopify.route';
 import { syncLogRouter } from '@/modules/sync/sync-log.route';
 import { userRouter } from '@/modules/users/user.route';
+import { walletRouter } from '@/modules/wallet/wallet.route';
 
 export const apiRouter = Router();
 
@@ -24,4 +25,5 @@ apiRouter.use('/shopify', shopifyRouter);
 apiRouter.use('/products', productRouter);
 apiRouter.use('/orders', orderRouter);
 apiRouter.use('/inventory', inventoryRouter);
+apiRouter.use('/wallet', walletRouter);
 apiRouter.use('/sync', syncLogRouter);
