@@ -512,13 +512,125 @@ const fetchShopifyProductById = async (userId: string, productId: string): Promi
 
 const upsertLocalShopifyProduct = async (userId: string, product: ShopifyProductNode) => {
   const mapped = shopifyMapper.toLocalProduct(userId, product);
-  await ProductModel.findOneAndUpdate(
+  const localProduct = await ProductModel.findOneAndUpdate(
     { userId, shopifyProductId: mapped.shopifyProductId },
     { $set: mapped },
     { upsert: true, new: true }
   );
 
-  return mapped;
+  return {
+    mapped,
+    localProduct
+  };
+};
+
+const getPrimaryShopifyLocation = async (userId: string) => {
+  try {
+    const { data } = await executeShopifyRequest<{
+      locations: {
+        nodes: Array<{ id: string; name?: string }>;
+      };
+    }>(
+      userId,
+      `
+        query GetPrimaryLocation {
+          locations(first: 20) {
+            nodes {
+              id
+              name
+            }
+          }
+        }
+      `
+    );
+
+    const location = data.locations.nodes[0];
+    if (!location?.id) {
+      return null;
+    }
+
+    return {
+      id: location.id,
+      name: location.name ?? 'Default'
+    };
+  } catch (error) {
+    logger.warn(
+      {
+        userId,
+        message: error instanceof Error ? error.message : 'Unknown Shopify location lookup failure'
+      },
+      'Could not resolve primary Shopify location for inventory sync'
+    );
+    return null;
+  }
+};
+
+const syncInventoryRowsFromShopifyProduct = async ({
+  userId,
+  localProduct,
+  shopifyProduct,
+  fallbackLocation
+}: {
+  userId: string;
+  localProduct: { _id?: { toString(): string } | string } | null;
+  shopifyProduct: ShopifyProductNode;
+  fallbackLocation: { id: string; name: string } | null;
+}) => {
+  let syncedCount = 0;
+
+  for (const variant of shopifyProduct.variants?.nodes ?? []) {
+    const inventoryItemId = variant.inventoryItem?.id;
+    if (!inventoryItemId) {
+      continue;
+    }
+
+    const levels = variant.inventoryItem?.inventoryLevels?.nodes ?? [];
+    const levelsToSync = levels.length
+      ? levels
+      : [{
+          location: {
+            id: fallbackLocation?.id ?? 'unknown',
+            name: fallbackLocation?.name ?? 'Default'
+          },
+          quantities: [{ name: 'available', quantity: variant.inventoryQuantity ?? 0 }]
+        }];
+
+    for (const level of levelsToSync) {
+      const locationId = level.location?.id ?? fallbackLocation?.id ?? 'unknown';
+      const locationName = level.location?.name ?? fallbackLocation?.name ?? 'Default';
+      const existing = await InventoryModel.findOne({ userId, inventoryItemId, locationId });
+      const mappedInventory = shopifyMapper.toLocalInventory(userId, shopifyProduct, variant, level);
+
+      await InventoryModel.findOneAndUpdate(
+        { userId, inventoryItemId, locationId },
+        {
+          $set: {
+            ...mappedInventory,
+            productId: localProduct?._id ? localProduct._id.toString() : undefined,
+            marketplace: 'shopify',
+            shopifyProductId: shopifyProduct.id,
+            shopifyVariantId: variant.id,
+            inventoryItemId,
+            sku: variant.sku ?? existing?.sku ?? '',
+            title: mappedInventory.title || `${shopifyProduct.title} - ${variant.title}`,
+            availableQuantity: level.quantities?.[0]?.quantity ?? variant.inventoryQuantity ?? 0,
+            locationId,
+            locationName,
+            lastSyncedAt: new Date()
+          },
+          $setOnInsert: {
+            safetyBuffer: 0,
+            lowStockThreshold: 5
+          }
+        },
+        { upsert: true, new: true }
+      );
+
+      syncedCount += 1;
+    }
+  }
+
+  return syncedCount;
 };
 
 const updateShopifyVariantPrice = async (userId: string, productId: string, variantId: string, price: string) => {
@@ -1145,33 +1257,16 @@ export const shopifyService = {
 
   async importProducts(userId: string) {
     const products = await this.getProducts(userId);
+    const fallbackLocation = await getPrimaryShopifyLocation(userId);
 
     for (const productNode of products) {
-      const mapped = shopifyMapper.toLocalProduct(userId, productNode);
-      await ProductModel.findOneAndUpdate(
-        { userId, shopifyProductId: mapped.shopifyProductId },
-        { $set: mapped },
-        { upsert: true, new: true }
-      );
-
-      for (const variant of productNode.variants?.nodes ?? []) {
-        const levels = variant.inventoryItem?.inventoryLevels?.nodes ?? [];
-        if (!levels.length) {
-          await InventoryModel.findOneAndUpdate(
-            { userId, inventoryItemId: variant.inventoryItem?.id ?? '', locationId: '' },
-            { $set: shopifyMapper.toLocalInventory(userId, productNode, variant) },
-            { upsert: true, new: true }
-          );
-        }
-
-        for (const level of levels) {
-          await InventoryModel.findOneAndUpdate(
-            { userId, inventoryItemId: variant.inventoryItem?.id ?? '', locationId: level.location?.id ?? '' },
-            { $set: shopifyMapper.toLocalInventory(userId, productNode, variant, level) },
-            { upsert: true, new: true }
-          );
-        }
-      }
+      const { localProduct } = await upsertLocalShopifyProduct(userId, productNode);
+      await syncInventoryRowsFromShopifyProduct({
+        userId,
+        localProduct,
+        shopifyProduct: productNode,
+        fallbackLocation
+      });
     }
 
     await marketplaceConnectionService.markShopifySynced(userId);
@@ -1230,7 +1325,14 @@ export const shopifyService = {
     const publishedToOnlineStore = payload.publishToOnlineStore
       ? await syncShopifyPublicationState(userId, finalProduct.id, true, warnings)
       : false;
-    const mapped = await upsertLocalShopifyProduct(userId, finalProduct);
+    const { mapped, localProduct } = await upsertLocalShopifyProduct(userId, finalProduct);
+    const fallbackLocation = await getPrimaryShopifyLocation(userId);
+    const inventoryRowsSynced = await syncInventoryRowsFromShopifyProduct({
+      userId,
+      localProduct,
+      shopifyProduct: finalProduct,
+      fallbackLocation
+    });
 
     await marketplaceConnectionService.markShopifySynced(userId);
     await syncLogService.create({
@@ -1246,7 +1348,7 @@ export const shopifyService = {
       imageUploaded: imageSyncResult.imageUploaded,
       product: finalProduct,
       publishedToOnlineStore,
-      warnings
+      warnings: inventoryRowsSynced > 0 ? warnings : [...warnings, 'Local inventory rows could not be derived for this product.']
     };
   },
 
@@ -1323,7 +1425,14 @@ export const shopifyService = {
         ? await syncShopifyPublicationState(userId, shopifyProductId, payload.publishToOnlineStore, warnings)
         : false;
 
-    await upsertLocalShopifyProduct(userId, finalProduct);
+    const { localProduct } = await upsertLocalShopifyProduct(userId, finalProduct);
+    const fallbackLocation = await getPrimaryShopifyLocation(userId);
+    await syncInventoryRowsFromShopifyProduct({
+      userId,
+      localProduct,
+      shopifyProduct: finalProduct,
+      fallbackLocation
+    });
 
     await marketplaceConnectionService.markShopifySynced(userId);
     return {
