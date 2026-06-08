@@ -34,6 +34,14 @@ export const marketplaceConnectionService = {
     return MarketplaceConnectionModel.findOne({ userId, marketplace: 'shopify' }).sort({ updatedAt: -1 });
   },
 
+  async getLatestConnectedShopifyConnection(): Promise<MarketplaceConnectionDocument | null> {
+    return MarketplaceConnectionModel.findOne({
+      marketplace: 'shopify',
+      status: 'connected',
+      accessTokenEncrypted: { $exists: true, $ne: '' }
+    }).sort({ updatedAt: -1 });
+  },
+
   async getRequiredShopifyConnection(userId: string): Promise<MarketplaceConnectionDocument> {
     const connection = await this.getShopifyConnection(userId);
     if (!connection) {

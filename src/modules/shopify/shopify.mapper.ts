@@ -91,6 +91,7 @@ export const shopifyMapper = {
     return {
       userId,
       marketplace: 'shopify' as const,
+      externalOrderId: node.id,
       shopifyOrderId: node.id,
       orderName: node.name,
       email: node.email ?? '',

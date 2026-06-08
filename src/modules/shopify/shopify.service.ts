@@ -85,6 +85,25 @@ type ShopifyOrderNode = {
   };
 };
 
+type ShopifyFulfillmentOrderNode = {
+  id: string;
+  status?: string;
+  supportedActions?: Array<{ action?: string }>;
+  lineItems?: {
+    nodes?: Array<{
+      id: string;
+      remainingQuantity?: number;
+    }>;
+  };
+};
+
+type ShopifyShipmentPayload = {
+  carrier?: string;
+  trackingNumber: string;
+  trackingUrl?: string;
+  notifyCustomer?: boolean;
+};
+
 type ShopifyOAuthAccessTokenResponse = {
   access_token?: string;
   scope?: string;
@@ -254,6 +273,26 @@ const ordersQuery = `
             originalUnitPriceSet { shopMoney { amount } }
             variant { id }
             product { id }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const fulfillmentOrdersQuery = `
+  query GetOrderFulfillmentOrders($id: ID!) {
+    order(id: $id) {
+      fulfillmentOrders(first: 20) {
+        nodes {
+          id
+          status
+          supportedActions { action }
+          lineItems(first: 50) {
+            nodes {
+              id
+              remainingQuantity
+            }
           }
         }
       }
@@ -461,6 +500,26 @@ const resolveShopifyAccess = async (userId: string): Promise<ResolvedShopifyAcce
 
   if (connection) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Shopify store is not connected.');
+  }
+
+  if (env.NODE_ENV === 'development') {
+    const sharedDevelopmentConnection = await marketplaceConnectionService.getLatestConnectedShopifyConnection();
+    if (sharedDevelopmentConnection?.accessTokenEncrypted) {
+      logger.warn(
+        {
+          requestedUserId: userId,
+          connectionUserId: sharedDevelopmentConnection.userId,
+          shopDomain: sharedDevelopmentConnection.shopDomain
+        },
+        'Using shared development Shopify OAuth connection for order sync'
+      );
+
+      return {
+        shopDomain: sharedDevelopmentConnection.shopDomain,
+        accessToken: encryptionUtils.decrypt(sharedDevelopmentConnection.accessTokenEncrypted),
+        source: 'marketplace_connection'
+      };
+    }
   }
 
   if (env.SHOPIFY_SHOP_DOMAIN && isConfiguredShopifyFallbackToken(env.SHOPIFY_ADMIN_ACCESS_TOKEN)) {
@@ -1517,6 +1576,85 @@ export const shopifyService = {
 
     await marketplaceConnectionService.markShopifySynced(userId);
     return data.productVariantsBulkUpdate.productVariants[0];
+  },
+
+  async markOrderAsShipped(userId: string, shopifyOrderId: string, payload: ShopifyShipmentPayload) {
+    const { data: fulfillmentOrderData } = await executeShopifyRequest<{
+      order: { fulfillmentOrders: { nodes: ShopifyFulfillmentOrderNode[] } } | null;
+    }>(userId, fulfillmentOrdersQuery, { id: shopifyOrderId });
+
+    const fulfillmentOrders = fulfillmentOrderData.order?.fulfillmentOrders.nodes ?? [];
+    const fulfillableOrders = fulfillmentOrders.filter((fulfillmentOrder) => {
+      const status = fulfillmentOrder.status?.toUpperCase();
+      const supportsCreate = fulfillmentOrder.supportedActions?.some((action) => action.action === 'CREATE_FULFILLMENT');
+      const hasRemainingItems = (fulfillmentOrder.lineItems?.nodes ?? []).some((lineItem) => (lineItem.remainingQuantity ?? 0) > 0);
+
+      return status !== 'CLOSED' && supportsCreate && hasRemainingItems;
+    });
+
+    if (!fulfillableOrders.length) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'No fulfillable Shopify fulfillment orders were found for this order');
+    }
+
+    const lineItemsByFulfillmentOrder = fulfillableOrders.map((fulfillmentOrder) => ({
+      fulfillmentOrderId: fulfillmentOrder.id,
+      fulfillmentOrderLineItems: (fulfillmentOrder.lineItems?.nodes ?? [])
+        .filter((lineItem) => (lineItem.remainingQuantity ?? 0) > 0)
+        .map((lineItem) => ({
+          id: lineItem.id,
+          quantity: lineItem.remainingQuantity ?? 0
+        }))
+    }));
+
+    const { data } = await executeShopifyRequest<{
+      fulfillmentCreateV2: {
+        fulfillment: { id: string; status?: string } | null;
+        userErrors: Array<{ message: string }>;
+      };
+    }>(
+      userId,
+      `
+        mutation CreateFulfillment($fulfillment: FulfillmentV2Input!) {
+          fulfillmentCreateV2(fulfillment: $fulfillment) {
+            fulfillment {
+              id
+              status
+            }
+            userErrors { message }
+          }
+        }
+      `,
+      {
+        fulfillment: {
+          lineItemsByFulfillmentOrder,
+          notifyCustomer: payload.notifyCustomer ?? true,
+          trackingInfo: {
+            company: payload.carrier,
+            number: payload.trackingNumber,
+            url: payload.trackingUrl
+          }
+        }
+      }
+    );
+
+    if (data.fulfillmentCreateV2.userErrors.length) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        data.fulfillmentCreateV2.userErrors[0]?.message ?? 'Shopify fulfillment creation failed'
+      );
+    }
+
+    await marketplaceConnectionService.markShopifySynced(userId);
+    await syncLogService.create({
+      userId,
+      entityType: 'order',
+      entityId: shopifyOrderId,
+      action: 'mark-shipped',
+      status: 'success',
+      message: 'Marked Shopify order as shipped successfully'
+    });
+
+    return data.fulfillmentCreateV2.fulfillment;
   },
 
   async getOrders(userId: string) {
