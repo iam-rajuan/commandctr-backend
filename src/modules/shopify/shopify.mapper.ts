@@ -12,6 +12,7 @@ type ShopifyVariantNode = {
   inventoryQuantity?: number;
   inventoryItem?: {
     id?: string;
+    tracked?: boolean;
     inventoryLevels?: {
       nodes?: ShopifyInventoryLevel[];
     };

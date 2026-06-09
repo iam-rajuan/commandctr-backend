@@ -194,7 +194,33 @@ const spec = swaggerJSDoc({
       '/api/v1/shopify/disconnect': { post: { tags: ['Shopify'], summary: 'Disconnect Shopify store', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
       '/api/v1/shopify/status': { get: { tags: ['Shopify'], summary: 'Shopify status', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
       '/api/v1/shopify/shop': { get: { tags: ['Shopify'], summary: 'Shopify shop', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
-      '/api/v1/shopify/import-products': { post: { tags: ['Shopify'], summary: 'Import Shopify products', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
+      '/api/v1/shopify/import-products': {
+        post: {
+          tags: ['Shopify'],
+          summary: 'Import Shopify products',
+          security: bearerSecurity,
+          responses: {
+            '200': {
+              description: 'OK',
+              content: {
+                'application/json': {
+                  example: {
+                    success: true,
+                    message: 'Shopify products imported successfully',
+                    data: {
+                      count: 2,
+                      importedCount: 1,
+                      updatedCount: 1,
+                      staleMarkedInactiveCount: 5,
+                      activeCount: 2
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       '/api/v1/shopify/products': {
         get: { tags: ['Shopify'], summary: 'Live Shopify products', security: bearerSecurity, responses: { '200': { description: 'OK' } } },
         post: {
@@ -330,7 +356,40 @@ const spec = swaggerJSDoc({
           responses: { '200': { description: 'OK' } }
         }
       },
-      '/api/v1/inventory': { get: { tags: ['Inventory'], summary: 'Local inventory', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
+      '/api/v1/inventory': {
+        get: {
+          tags: ['Inventory'],
+          summary: 'Local inventory',
+          security: bearerSecurity,
+          parameters: [{ name: 'includeInactive', in: 'query', required: false, schema: { type: 'boolean' } }],
+          responses: {
+            '200': {
+              description: 'OK',
+              content: {
+                'application/json': {
+                  example: {
+                    success: true,
+                    message: 'Inventory fetched successfully',
+                    data: [{
+                      _id: '68476070cb3f4aa3fe8d8123',
+                      inventoryItemId: 'gid://shopify/InventoryItem/123',
+                      locationId: 'gid://shopify/Location/456',
+                      shopifyProductId: 'gid://shopify/Product/789',
+                      shopifyVariantId: 'gid://shopify/ProductVariant/987',
+                      shopifyQuantity: 8,
+                      safetyBuffer: 2,
+                      availableQuantity: 6,
+                      lowStockThreshold: 5,
+                      isActive: true,
+                      sourceStatus: 'active'
+                    }]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       '/api/v1/inventory/{id}': {
         get: { tags: ['Inventory'], summary: 'Local inventory item', security: bearerSecurity, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'OK' } } },
         patch: { tags: ['Inventory'], summary: 'Update local inventory item', security: bearerSecurity, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'OK' } } }

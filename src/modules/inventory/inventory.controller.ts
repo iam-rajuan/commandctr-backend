@@ -8,7 +8,8 @@ const getParam = (value: string | string[] | undefined): string => (Array.isArra
 
 export const inventoryController = {
   getInventory: asyncHandler(async (req, res) => {
-    const inventory = await inventoryService.getInventory(req.user!.userId);
+    const includeInactive = String(req.query.includeInactive ?? '').toLowerCase() === 'true';
+    const inventory = await inventoryService.getInventory(req.user!.userId, includeInactive);
     res.status(httpStatus.OK).json(ApiResponse.success('Inventory fetched successfully', inventory));
   }),
   getInventoryById: asyncHandler(async (req, res) => {

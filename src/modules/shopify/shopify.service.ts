@@ -7,6 +7,8 @@ import { httpStatus } from '@/constants/http.constant';
 import { marketplaceConnectionService } from '@/modules/marketplace-connections/marketplace-connection.service';
 import { DisputeModel } from '@/modules/disputes/dispute.model';
 import { InventoryModel } from '@/modules/inventory/inventory.model';
+import { inventoryService } from '@/modules/inventory/inventory.service';
+import { inventoryUtils } from '@/modules/inventory/inventory.utils';
 import { OrderModel } from '@/modules/orders/order.model';
 import { ProductModel } from '@/modules/products/product.model';
 import { syncLogService } from '@/modules/sync/sync-log.service';
@@ -30,6 +32,7 @@ type ShopifyVariantNode = {
   inventoryQuantity?: number;
   inventoryItem?: {
     id?: string;
+    tracked?: boolean;
     inventoryLevels?: {
       nodes?: ShopifyInventoryLevel[];
     };
@@ -201,6 +204,7 @@ const SHOPIFY_DISPUTE_SCOPE_HINTS = [
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 const oauthStateStore = new Map<string, { userId: string; createdAt: number }>();
+const buildInventoryRowKey = (inventoryItemId: string, locationId?: string | null) => `${inventoryItemId}::${locationId ?? ''}`;
 
 const productSelection = `
   id
@@ -232,6 +236,7 @@ const productSelection = `
       inventoryQuantity
       inventoryItem {
         id
+        tracked
         inventoryLevels(first: 5) {
           nodes {
             location { id name }
@@ -667,6 +672,9 @@ const fetchShopifyAvailableQuantity = async (userId: string, inventoryItemId: st
 
 const upsertLocalShopifyProduct = async (userId: string, product: ShopifyProductNode) => {
   const mapped = shopifyMapper.toLocalProduct(userId, product);
+  const existingProduct = await ProductModel.findOne({ userId, shopifyProductId: mapped.shopifyProductId })
+    .select({ _id: 1 })
+    .lean();
   const localProduct = await ProductModel.findOneAndUpdate(
     { userId, shopifyProductId: mapped.shopifyProductId },
     { $set: mapped },
@@ -675,7 +683,8 @@ const upsertLocalShopifyProduct = async (userId: string, product: ShopifyProduct
 
   return {
     mapped,
-    localProduct
+    localProduct,
+    wasCreated: !existingProduct
   };
 };
 
@@ -732,10 +741,13 @@ const syncInventoryRowsFromShopifyProduct = async ({
   fallbackLocation: { id: string; name: string } | null;
 }) => {
   let syncedCount = 0;
+  let createdCount = 0;
+  let updatedCount = 0;
+  const liveKeys: string[] = [];
 
   for (const variant of shopifyProduct.variants?.nodes ?? []) {
     const inventoryItemId = variant.inventoryItem?.id;
-    if (!inventoryItemId) {
+    if (!inventoryItemId || variant.inventoryItem?.tracked === false) {
       continue;
     }
 
@@ -755,6 +767,12 @@ const syncInventoryRowsFromShopifyProduct = async ({
       const locationName = level.location?.name ?? fallbackLocation?.name ?? 'Default';
       const existing = await InventoryModel.findOne({ userId, inventoryItemId, locationId });
       const mappedInventory = shopifyMapper.toLocalInventory(userId, shopifyProduct, variant, level);
+      const availability = inventoryUtils.calculateInventoryAvailability(
+        level.quantities?.[0]?.quantity ?? variant.inventoryQuantity ?? 0,
+        existing?.safetyBuffer ?? 0,
+        existing?.lowStockThreshold ?? 5
+      );
+      liveKeys.push(buildInventoryRowKey(inventoryItemId, locationId));
 
       await InventoryModel.findOneAndUpdate(
         { userId, inventoryItemId, locationId },
@@ -768,24 +786,45 @@ const syncInventoryRowsFromShopifyProduct = async ({
             inventoryItemId,
             sku: variant.sku ?? existing?.sku ?? '',
             title: mappedInventory.title || `${shopifyProduct.title} - ${variant.title}`,
-            availableQuantity: level.quantities?.[0]?.quantity ?? variant.inventoryQuantity ?? 0,
+            shopifyQuantity: availability.shopifyQuantity,
+            availableQuantity: availability.availableQuantity,
+            safetyBuffer: availability.safetyBuffer,
+            lowStockThreshold: availability.lowStockThreshold,
+            isActive: true,
+            sourceStatus: 'active',
             locationId,
             locationName,
             lastSyncedAt: new Date()
           },
           $setOnInsert: {
             safetyBuffer: 0,
-            lowStockThreshold: 5
+            lowStockThreshold: 5,
+            isActive: true,
+            sourceStatus: 'active'
+          },
+          $unset: {
+            staleReason: 1,
+            staleMarkedAt: 1
           }
         },
         { upsert: true, new: true }
       );
 
+      if (existing) {
+        updatedCount += 1;
+      } else {
+        createdCount += 1;
+      }
       syncedCount += 1;
     }
   }
 
-  return syncedCount;
+  return {
+    syncedCount,
+    createdCount,
+    updatedCount,
+    liveKeys
+  };
 };
 
 const updateShopifyVariantPrice = async (userId: string, productId: string, variantId: string, price: string) => {
@@ -1470,16 +1509,32 @@ export const shopifyService = {
   async importProducts(userId: string) {
     const products = await this.getProducts(userId);
     const fallbackLocation = await getPrimaryShopifyLocation(userId);
+    let importedCount = 0;
+    let updatedCount = 0;
+    const liveInventoryKeys = new Set<string>();
 
     for (const productNode of products) {
-      const { localProduct } = await upsertLocalShopifyProduct(userId, productNode);
-      await syncInventoryRowsFromShopifyProduct({
+      const { localProduct, wasCreated } = await upsertLocalShopifyProduct(userId, productNode);
+      if (wasCreated) {
+        importedCount += 1;
+      } else {
+        updatedCount += 1;
+      }
+
+      const inventorySyncResult = await syncInventoryRowsFromShopifyProduct({
         userId,
         localProduct,
         shopifyProduct: productNode,
         fallbackLocation
       });
+
+      for (const liveKey of inventorySyncResult.liveKeys) {
+        liveInventoryKeys.add(liveKey);
+      }
     }
+
+    const { staleMarkedInactiveCount } = await inventoryService.reconcileInventoryRowsForUser(userId, [...liveInventoryKeys]);
+    const activeCount = await InventoryModel.countDocuments({ userId, isActive: { $ne: false } });
 
     await marketplaceConnectionService.markShopifySynced(userId);
     await syncLogService.create({
@@ -1490,7 +1545,13 @@ export const shopifyService = {
       message: `Imported ${products.length} Shopify products`
     });
 
-    return { count: products.length };
+    return {
+      count: products.length,
+      importedCount,
+      updatedCount,
+      staleMarkedInactiveCount,
+      activeCount
+    };
   },
 
   async createProduct(userId: string, payload: ShopifyProductMutationPayload): Promise<ShopifyProductMutationResult> {
@@ -1560,7 +1621,7 @@ export const shopifyService = {
       imageUploaded: imageSyncResult.imageUploaded,
       product: finalProduct,
       publishedToOnlineStore,
-      warnings: inventoryRowsSynced > 0 ? warnings : [...warnings, 'Local inventory rows could not be derived for this product.']
+      warnings: inventoryRowsSynced.syncedCount > 0 ? warnings : [...warnings, 'Local inventory rows could not be derived for this product.']
     };
   },
 
@@ -1877,8 +1938,13 @@ export const shopifyService = {
     const products = await this.getProducts(userId);
     return products.flatMap((productNode) =>
       (productNode.variants?.nodes ?? []).flatMap((variant) => {
+        if (!variant.inventoryItem?.id || variant.inventoryItem?.tracked === false) {
+          return [];
+        }
+
         const levels = variant.inventoryItem?.inventoryLevels?.nodes ?? [];
         if (!levels.length) {
+          const quantity = inventoryUtils.coerceNonNegativeNumber(variant.inventoryQuantity ?? 0);
           return [{
             productId: productNode.id,
             productTitle: productNode.title,
@@ -1886,23 +1952,26 @@ export const shopifyService = {
             variantTitle: variant.title,
             inventoryItemId: variant.inventoryItem?.id ?? '',
             sku: variant.sku ?? '',
-            quantity: variant.inventoryQuantity ?? 0,
+            quantity,
             locationId: '',
             locationName: ''
           }];
         }
 
-        return levels.map((level) => ({
-          productId: productNode.id,
-          productTitle: productNode.title,
-          variantId: variant.id,
-          variantTitle: variant.title,
-          inventoryItemId: variant.inventoryItem?.id ?? '',
-          sku: variant.sku ?? '',
-          quantity: level.quantities?.[0]?.quantity ?? variant.inventoryQuantity ?? 0,
-          locationId: level.location?.id ?? '',
-          locationName: level.location?.name ?? ''
-        }));
+        return levels.map((level) => {
+          const quantity = inventoryUtils.coerceNonNegativeNumber(level.quantities?.[0]?.quantity ?? variant.inventoryQuantity ?? 0);
+          return {
+            productId: productNode.id,
+            productTitle: productNode.title,
+            variantId: variant.id,
+            variantTitle: variant.title,
+            inventoryItemId: variant.inventoryItem?.id ?? '',
+            sku: variant.sku ?? '',
+            quantity,
+            locationId: level.location?.id ?? '',
+            locationName: level.location?.name ?? ''
+          };
+        });
       })
     );
   },
@@ -1941,10 +2010,37 @@ export const shopifyService = {
       throw new ApiError(httpStatus.BAD_REQUEST, data.inventorySetQuantities.userErrors[0]?.message ?? 'Shopify inventory update failed');
     }
 
-    await InventoryModel.updateOne(
-      { userId, inventoryItemId, locationId: payload.locationId },
-      { $set: { availableQuantity: payload.quantity, lastSyncedAt: new Date() } }
-    );
+    const existingRow = await InventoryModel.findOne({
+      userId,
+      inventoryItemId,
+      locationId: payload.locationId,
+      isActive: { $ne: false }
+    });
+    if (existingRow) {
+      const availability = inventoryUtils.calculateInventoryAvailability(
+        payload.quantity,
+        existingRow.safetyBuffer ?? 0,
+        existingRow.lowStockThreshold ?? 5
+      );
+      await InventoryModel.updateOne(
+        { _id: existingRow._id },
+        {
+          $set: {
+            shopifyQuantity: availability.shopifyQuantity,
+            availableQuantity: availability.availableQuantity,
+            safetyBuffer: availability.safetyBuffer,
+            lowStockThreshold: availability.lowStockThreshold,
+            isActive: true,
+            sourceStatus: 'active',
+            lastSyncedAt: new Date()
+          },
+          $unset: {
+            staleReason: 1,
+            staleMarkedAt: 1
+          }
+        }
+      );
+    }
 
     await marketplaceConnectionService.markShopifySynced(userId);
     await syncLogService.create({
