@@ -23,6 +23,7 @@ shopifyRouter.patch('/products/:shopifyProductId', validateRequest(shopifyValida
 shopifyRouter.patch('/products/:shopifyProductId/price', validateRequest(shopifyValidation.updatePrice), shopifyController.updatePrice);
 shopifyRouter.get('/orders', shopifyController.getOrders);
 shopifyRouter.post('/import-orders', shopifyController.importOrders);
+shopifyRouter.post('/import-disputes', shopifyController.importDisputes);
 shopifyRouter.get('/locations', shopifyController.getLocations);
 shopifyRouter.get('/inventory', shopifyController.getInventory);
 shopifyRouter.patch('/inventory/:inventoryItemId', validateRequest(shopifyValidation.updateInventory), shopifyController.updateInventory);

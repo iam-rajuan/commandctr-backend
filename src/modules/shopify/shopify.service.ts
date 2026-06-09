@@ -5,6 +5,7 @@ import { env } from '@/config/env';
 import { logger } from '@/config/logger';
 import { httpStatus } from '@/constants/http.constant';
 import { marketplaceConnectionService } from '@/modules/marketplace-connections/marketplace-connection.service';
+import { DisputeModel } from '@/modules/disputes/dispute.model';
 import { InventoryModel } from '@/modules/inventory/inventory.model';
 import { OrderModel } from '@/modules/orders/order.model';
 import { ProductModel } from '@/modules/products/product.model';
@@ -97,6 +98,28 @@ type ShopifyFulfillmentOrderNode = {
   };
 };
 
+type ShopifyMoneyV2 = {
+  amount?: string;
+  currencyCode?: string;
+};
+
+type ShopifyPaymentsDisputeNode = {
+  id?: string;
+  status?: string;
+  reason?: string;
+  amount?: ShopifyMoneyV2;
+  initiatedAt?: string;
+  updatedAt?: string;
+  dueAt?: string;
+  evidence?: { status?: string };
+  order?: {
+    id?: string;
+    name?: string;
+    email?: string;
+    customer?: { firstName?: string; lastName?: string };
+  };
+};
+
 type ShopifyShipmentPayload = {
   carrier?: string;
   trackingNumber: string;
@@ -168,6 +191,12 @@ const SHOPIFY_SCOPES = [
   'read_publications',
   'write_publications'
 ].join(',');
+
+const SHOPIFY_DISPUTE_SCOPE_HINTS = [
+  'read_shopify_payments_disputes',
+  'read_shopify_payments',
+  'read_shopify_payments_payouts'
+];
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -293,6 +322,37 @@ const fulfillmentOrdersQuery = `
               id
               remainingQuantity
             }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const shopifyPaymentsDisputesQuery = `
+  query GetShopifyPaymentsDisputes {
+    shopifyPaymentsDisputes(first: 50) {
+      nodes {
+        id
+        status
+        reason
+        initiatedAt
+        updatedAt
+        dueAt
+        evidence {
+          status
+        }
+        amount {
+          amount
+          currencyCode
+        }
+        order {
+          id
+          name
+          email
+          customer {
+            firstName
+            lastName
           }
         }
       }
@@ -902,6 +962,63 @@ const getStoredShopifyScopes = async (userId: string) => {
   }
 
   return new Set(connection.scopes.map((scope) => scope.trim()).filter(Boolean));
+};
+
+const hasDisputeScopeHints = (scopes: Set<string> | null) => {
+  if (!scopes) {
+    return false;
+  }
+
+  return SHOPIFY_DISPUTE_SCOPE_HINTS.some((scope) => scopes.has(scope));
+};
+
+const normalizeDisputeStatus = (value: unknown) => {
+  const normalized = String(value ?? '').trim().toUpperCase();
+  if (normalized.includes('OPEN')) {
+    return 'OPEN';
+  }
+  if (normalized.includes('SUBMITTED')) {
+    return 'SUBMITTED';
+  }
+  if (normalized.includes('WON')) {
+    return 'WON';
+  }
+  if (normalized.includes('LOST')) {
+    return 'LOST';
+  }
+
+  return 'UNKNOWN';
+};
+
+const mapShopifyDisputeToLocalDispute = async (userId: string, dispute: ShopifyPaymentsDisputeNode) => {
+  const shopifyOrderId = dispute.order?.id;
+  const relatedOrder = shopifyOrderId
+    ? await OrderModel.findOne({ userId, shopifyOrderId }).select('_id orderName shopifyOrderId customerName email currency').lean()
+    : null;
+
+  return {
+    userId,
+    marketplace: 'shopify' as const,
+    localOrderId: relatedOrder?._id ?? null,
+    shopifyOrderId: shopifyOrderId ?? relatedOrder?.shopifyOrderId ?? '',
+    orderName: dispute.order?.name ?? relatedOrder?.orderName ?? '',
+    customerName:
+      [dispute.order?.customer?.firstName, dispute.order?.customer?.lastName].filter(Boolean).join(' ')
+      || relatedOrder?.customerName
+      || '',
+    customerEmail: dispute.order?.email ?? relatedOrder?.email ?? '',
+    disputeId: dispute.id ?? '',
+    status: normalizeDisputeStatus(dispute.status),
+    reason: dispute.reason?.trim() || 'Unknown dispute reason',
+    amount: dispute.amount?.amount?.trim() || undefined,
+    currency: dispute.amount?.currencyCode?.trim() || relatedOrder?.currency || undefined,
+    deadline: dispute.dueAt ? new Date(dispute.dueAt) : undefined,
+    evidenceStatus: dispute.evidence?.status?.trim() || undefined,
+    sourceCreatedAt: dispute.initiatedAt ? new Date(dispute.initiatedAt) : undefined,
+    sourceUpdatedAt: dispute.updatedAt ? new Date(dispute.updatedAt) : undefined,
+    rawShopifyData: dispute,
+    lastSyncedAt: new Date()
+  };
 };
 
 const canManageShopifyPublications = async (userId: string, shouldPublish: boolean) => {
@@ -1684,6 +1801,67 @@ export const shopifyService = {
     });
 
     return { count: orders.length };
+  },
+
+  async importDisputes(userId: string) {
+    const storedScopes = await getStoredShopifyScopes(userId);
+    if (!hasDisputeScopeHints(storedScopes)) {
+      return {
+        count: 0,
+        warning: 'No Shopify dispute data available with current API/scopes.'
+      };
+    }
+
+    try {
+      const { data } = await executeShopifyRequest<{ shopifyPaymentsDisputes?: { nodes?: ShopifyPaymentsDisputeNode[] } }>(
+        userId,
+        shopifyPaymentsDisputesQuery
+      );
+
+      const disputes = data.shopifyPaymentsDisputes?.nodes ?? [];
+      let count = 0;
+
+      for (const dispute of disputes) {
+        if (!dispute.id) {
+          continue;
+        }
+
+        const mapped = await mapShopifyDisputeToLocalDispute(userId, dispute);
+        await DisputeModel.findOneAndUpdate(
+          { userId, marketplace: 'shopify', disputeId: mapped.disputeId },
+          { $set: mapped },
+          { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+        count += 1;
+      }
+
+      await marketplaceConnectionService.markShopifySynced(userId);
+      await syncLogService.create({
+        userId,
+        entityType: 'order',
+        action: 'import-disputes',
+        status: 'success',
+        message: `Imported ${count} Shopify disputes`
+      });
+
+      return {
+        count,
+        warning: count === 0 ? 'No Shopify dispute data available with current API/scopes.' : undefined
+      };
+    } catch (error) {
+      logger.warn(
+        {
+          userId,
+          message: error instanceof Error ? error.message : 'Unknown Shopify dispute import failure'
+        },
+        'Shopify disputes import fell back to empty result'
+      );
+
+      return {
+        count: 0,
+        warning: 'No Shopify dispute data available with current API/scopes.'
+      };
+    }
   },
 
   async getLocations(userId: string) {

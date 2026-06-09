@@ -73,6 +73,10 @@ export const shopifyController = {
     const result = await shopifyService.importOrders(req.user!.userId);
     res.status(httpStatus.OK).json(ApiResponse.success('Shopify orders imported successfully', result));
   }),
+  importDisputes: asyncHandler(async (req, res) => {
+    const result = await shopifyService.importDisputes(req.user!.userId);
+    res.status(httpStatus.OK).json(ApiResponse.success('Shopify disputes import completed', result));
+  }),
   getLocations: asyncHandler(async (req, res) => {
     const result = await shopifyService.getLocations(req.user!.userId);
     res.status(httpStatus.OK).json(ApiResponse.success('Shopify locations fetched successfully', result));

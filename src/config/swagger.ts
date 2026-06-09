@@ -228,6 +228,32 @@ const spec = swaggerJSDoc({
       },
       '/api/v1/shopify/orders': { get: { tags: ['Shopify'], summary: 'Live Shopify orders', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
       '/api/v1/shopify/import-orders': { post: { tags: ['Shopify'], summary: 'Import Shopify orders', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
+      '/api/v1/shopify/import-disputes': {
+        post: {
+          tags: ['Shopify'],
+          summary: 'Import Shopify disputes into the local read-only MVP store',
+          description:
+            'Attempts to import real Shopify dispute or chargeback data when available. If current Shopify API access or scopes do not expose dispute data, this endpoint succeeds with count 0 and a warning instead of failing.',
+          security: bearerSecurity,
+          responses: {
+            '200': {
+              description: 'OK',
+              content: {
+                'application/json': {
+                  example: {
+                    success: true,
+                    message: 'Shopify disputes import completed',
+                    data: {
+                      count: 0,
+                      warning: 'No Shopify dispute data available with current API/scopes.'
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       '/api/v1/shopify/locations': { get: { tags: ['Shopify'], summary: 'Shopify locations', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
       '/api/v1/shopify/inventory': { get: { tags: ['Shopify'], summary: 'Shopify inventory', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
       '/api/v1/shopify/inventory/{inventoryItemId}': {
@@ -248,6 +274,62 @@ const spec = swaggerJSDoc({
       },
       '/api/v1/orders': { get: { tags: ['Orders'], summary: 'Local orders', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
       '/api/v1/orders/{id}': { get: { tags: ['Orders'], summary: 'Local order', security: bearerSecurity, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'OK' } } } },
+      '/api/v1/disputes': {
+        get: {
+          tags: ['Disputes'],
+          summary: 'List locally stored Shopify disputes for the read-only MVP',
+          description:
+            'Returns dispute rows and summary stats for the Shopify-only disputes MVP. This endpoint is read-only and does not support evidence submission or resolution actions.',
+          security: bearerSecurity,
+          parameters: [
+            { name: 'status', in: 'query', required: false, schema: { type: 'string', enum: ['OPEN', 'SUBMITTED', 'WON', 'LOST', 'UNKNOWN'] } },
+            { name: 'search', in: 'query', required: false, schema: { type: 'string' } },
+            { name: 'page', in: 'query', required: false, schema: { type: 'string' } },
+            { name: 'limit', in: 'query', required: false, schema: { type: 'string' } }
+          ],
+          responses: {
+            '200': {
+              description: 'OK',
+              content: {
+                'application/json': {
+                  example: {
+                    success: true,
+                    message: 'Disputes retrieved successfully',
+                    data: {
+                      items: [],
+                      meta: {
+                        page: 1,
+                        limit: 25,
+                        total: 0,
+                        totalPages: 1
+                      },
+                      stats: {
+                        actionRequired: 0,
+                        activeDisputes: 0,
+                        won: 0,
+                        lost: 0,
+                        submitted: 0,
+                        avgResolutionTimeDays: null
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      '/api/v1/disputes/{id}': {
+        get: {
+          tags: ['Disputes'],
+          summary: 'Read one local Shopify dispute for the read-only MVP',
+          description:
+            'Returns a single locally stored dispute record plus a related local order summary when available. This endpoint is read-only and does not submit evidence or resolve disputes.',
+          security: bearerSecurity,
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { '200': { description: 'OK' } }
+        }
+      },
       '/api/v1/inventory': { get: { tags: ['Inventory'], summary: 'Local inventory', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
       '/api/v1/inventory/{id}': {
         get: { tags: ['Inventory'], summary: 'Local inventory item', security: bearerSecurity, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'OK' } } },
