@@ -30,7 +30,30 @@ type ShopifyProductNode = {
   tags?: string[];
   totalInventory?: number;
   featuredImage?: { url?: string };
+  media?: {
+    nodes?: Array<{
+      id?: string;
+      alt?: string;
+      image?: { url?: string } | null;
+      preview?: { image?: { url?: string } | null } | null;
+    }>;
+  };
   variants?: { nodes?: ShopifyVariantNode[] };
+};
+
+const resolveProductImageUrl = (node: ShopifyProductNode) => {
+  if (node.featuredImage?.url) {
+    return node.featuredImage.url;
+  }
+
+  for (const mediaNode of node.media?.nodes ?? []) {
+    const mediaUrl = mediaNode.image?.url ?? mediaNode.preview?.image?.url;
+    if (mediaUrl) {
+      return mediaUrl;
+    }
+  }
+
+  return '';
 };
 
 type ShopifyOrderNode = {
@@ -73,7 +96,7 @@ export const shopifyMapper = {
       status: node.status ?? '',
       tags: Array.isArray(node.tags) ? node.tags : [],
       totalInventory: node.totalInventory ?? 0,
-      featuredImage: node.featuredImage?.url ?? '',
+      featuredImage: resolveProductImageUrl(node),
       variants: (node.variants?.nodes ?? []).map((variant) => ({
         shopifyVariantId: variant.id,
         title: variant.title,

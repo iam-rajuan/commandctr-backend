@@ -58,7 +58,8 @@ type ShopifyProductNode = {
     nodes?: Array<{
       id: string;
       alt?: string;
-      image?: { url?: string };
+      image?: { url?: string } | null;
+      preview?: { image?: { url?: string } | null } | null;
     }>;
   };
 };
@@ -223,6 +224,9 @@ const productSelection = `
         id
         alt
         image { url }
+        preview {
+          image { url }
+        }
       }
     }
   }
