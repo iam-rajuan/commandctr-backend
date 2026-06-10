@@ -24,7 +24,14 @@ const parseAmount = (value: unknown) => {
 
 const roundCurrency = (value: number) => Number(value.toFixed(2));
 
-const getPlatformBalances = (currency: string, shopifyAmount: number, isShopifyConnected: boolean): WalletPlatformBalance[] => [
+const getPlatformBalances = (
+  currency: string,
+  shopifyAmount: number,
+  isShopifyConnected: boolean,
+  amazonAmount: number,
+  ebayAmount: number,
+  tiktokAmount: number
+): WalletPlatformBalance[] => [
   {
     platform: 'shopify',
     label: 'Shopify Revenue',
@@ -36,26 +43,26 @@ const getPlatformBalances = (currency: string, shopifyAmount: number, isShopifyC
   {
     platform: 'amazon',
     label: 'Amazon Seller',
-    amount: 0,
+    amount: roundCurrency(amazonAmount),
     currency,
-    status: 'Coming Soon',
-    isConnected: false
+    status: amazonAmount > 0 ? 'Connected' : 'Coming Soon',
+    isConnected: amazonAmount > 0
   },
   {
     platform: 'ebay',
     label: 'eBay Payout',
-    amount: 0,
+    amount: roundCurrency(ebayAmount),
     currency,
-    status: 'Coming Soon',
-    isConnected: false
+    status: ebayAmount > 0 ? 'Connected' : 'Coming Soon',
+    isConnected: ebayAmount > 0
   },
   {
     platform: 'tiktok',
     label: 'TikTok Shop',
-    amount: 0,
+    amount: roundCurrency(tiktokAmount),
     currency,
-    status: 'Coming Soon',
-    isConnected: false
+    status: tiktokAmount > 0 ? 'Connected' : 'Coming Soon',
+    isConnected: tiktokAmount > 0
   }
 ];
 
@@ -94,8 +101,8 @@ const buildActivityTitle = (type: WalletActivityType) => {
 export const walletService = {
   async getOverview(userId: string): Promise<WalletOverview> {
     const [orders, shopifyConnection] = await Promise.all([
-      OrderModel.find({ userId, marketplace: 'shopify' })
-        .select('shopifyOrderId externalOrderId orderName financialStatus totalPrice currency processedAt createdAt')
+      OrderModel.find({ userId })
+        .select('shopifyOrderId externalOrderId orderName financialStatus totalPrice currency processedAt createdAt marketplace')
         .sort({ processedAt: -1, createdAt: -1 })
         .lean(),
       marketplaceConnectionService.getShopifyConnection(userId).catch(() => null)
@@ -118,14 +125,29 @@ export const walletService = {
     let paidOrderCount = 0;
     let pendingOrderCount = 0;
 
+    let shopifyAmount = 0;
+    let amazonAmount = 0;
+    let ebayAmount = 0;
+    let tiktokAmount = 0;
+
     const recentActivity: WalletActivityItem[] = ordersInPrimaryCurrency.slice(0, 10).map((order) => {
       const financialStatus = normalizeFinancialStatus(order.financialStatus);
       const type = buildActivityType(financialStatus);
       const amount = parseAmount(order.totalPrice);
+      const platform = String(order.marketplace ?? 'shopify').toLowerCase();
 
       if (type === 'ORDER_PAID') {
         paidRevenue += amount;
         paidOrderCount += 1;
+        if (platform === 'shopify') {
+          shopifyAmount += amount;
+        } else if (platform === 'amazon') {
+          amazonAmount += amount;
+        } else if (platform === 'ebay') {
+          ebayAmount += amount;
+        } else if (platform === 'tiktok') {
+          tiktokAmount += amount;
+        }
       } else if (type === 'ORDER_PENDING') {
         pendingRevenue += amount;
         pendingOrderCount += 1;
@@ -133,11 +155,26 @@ export const walletService = {
         refundedRevenue += 0;
       }
 
+      const getPlatformLabel = (p: string) => {
+        if (p === 'amazon') return 'Amazon';
+        if (p === 'ebay') return 'eBay';
+        if (p === 'tiktok') return 'TikTok';
+        return 'Shopify';
+      };
+
+      const platLabel = getPlatformLabel(platform);
+
       return {
         id: String(order._id ?? order.shopifyOrderId ?? order.externalOrderId ?? order.orderName ?? ''),
         type,
-        title: buildActivityTitle(type),
-        subtitle: order.orderName ?? order.shopifyOrderId ?? 'Shopify order',
+        title: type === 'ORDER_PAID'
+          ? `${platLabel} order paid`
+          : type === 'ORDER_PENDING'
+          ? `${platLabel} order pending`
+          : type === 'ORDER_REFUNDED'
+          ? `${platLabel} order refunded`
+          : `${platLabel} order created`,
+        subtitle: order.orderName ?? order.shopifyOrderId ?? order.externalOrderId ?? `${platLabel} order`,
         amount: type === 'ORDER_REFUNDED' ? 0 : roundCurrency(amount),
         currency: primaryCurrency,
         status: financialStatus.toLowerCase() || 'created',
@@ -148,10 +185,20 @@ export const walletService = {
     for (const order of ordersInPrimaryCurrency.slice(10)) {
       const financialStatus = normalizeFinancialStatus(order.financialStatus);
       const amount = parseAmount(order.totalPrice);
+      const platform = String(order.marketplace ?? 'shopify').toLowerCase();
 
       if (PAID_STATUSES.has(financialStatus)) {
         paidRevenue += amount;
         paidOrderCount += 1;
+        if (platform === 'shopify') {
+          shopifyAmount += amount;
+        } else if (platform === 'amazon') {
+          amazonAmount += amount;
+        } else if (platform === 'ebay') {
+          ebayAmount += amount;
+        } else if (platform === 'tiktok') {
+          tiktokAmount += amount;
+        }
       } else if (PENDING_STATUSES.has(financialStatus)) {
         pendingRevenue += amount;
         pendingOrderCount += 1;
@@ -171,7 +218,14 @@ export const walletService = {
       orderCount: orders.length,
       paidOrderCount,
       pendingOrderCount,
-      platformBalances: getPlatformBalances(primaryCurrency, paidRevenue, Boolean(shopifyConnection)),
+      platformBalances: getPlatformBalances(
+        primaryCurrency,
+        shopifyAmount,
+        Boolean(shopifyConnection),
+        amazonAmount,
+        ebayAmount,
+        tiktokAmount
+      ),
       recentActivity,
       notice
     };
