@@ -12,7 +12,7 @@ const spec = swaggerJSDoc({
     info: {
       title: `${APP_NAME} API`,
       version: APP_VERSION,
-      description: 'CommandCtr Shopify MVP backend APIs.'
+      description: 'CommandCtr marketplace backend APIs.'
     },
     servers: [{ url: 'http://localhost:5000' }],
     components: {
@@ -194,6 +194,65 @@ const spec = swaggerJSDoc({
       '/api/v1/shopify/disconnect': { post: { tags: ['Shopify'], summary: 'Disconnect Shopify store', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
       '/api/v1/shopify/status': { get: { tags: ['Shopify'], summary: 'Shopify status', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
       '/api/v1/shopify/shop': { get: { tags: ['Shopify'], summary: 'Shopify shop', security: bearerSecurity, responses: { '200': { description: 'OK' } } } },
+      '/api/v1/ebay/connect-url': {
+        get: {
+          tags: ['eBay'],
+          summary: 'Generate eBay OAuth connect URL',
+          description: 'Protected endpoint for CommandCtr merchants. Call this endpoint with Bearer auth, then redirect the browser to the returned connectUrl.',
+          security: bearerSecurity,
+          responses: {
+            '200': {
+              description: 'OK',
+              content: {
+                'application/json': {
+                  example: {
+                    success: true,
+                    message: 'eBay connect URL generated successfully',
+                    data: {
+                      connectUrl: 'https://auth.sandbox.ebay.com/oauth2/authorize?...'
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      '/api/v1/ebay/callback': {
+        get: {
+          tags: ['eBay'],
+          summary: 'Handle eBay OAuth callback',
+          description: 'Public callback endpoint used by eBay seller OAuth. This MVP stores encrypted OAuth tokens only and does not perform listing or order actions yet.',
+          parameters: [
+            { name: 'code', in: 'query', required: false, schema: { type: 'string' } },
+            { name: 'state', in: 'query', required: false, schema: { type: 'string' } },
+            { name: 'error', in: 'query', required: false, schema: { type: 'string' } },
+            { name: 'error_description', in: 'query', required: false, schema: { type: 'string' } }
+          ],
+          responses: {
+            '200': { description: 'eBay connection established' },
+            '302': { description: 'Redirects to /integration with success or error query params if FRONTEND_URL is configured' }
+          }
+        }
+      },
+      '/api/v1/ebay/status': {
+        get: {
+          tags: ['eBay'],
+          summary: 'eBay seller connection status',
+          description: 'Returns the stored eBay OAuth connection state only. No eBay product, listing, inventory, or order operations are included in this MVP.',
+          security: bearerSecurity,
+          responses: { '200': { description: 'OK' } }
+        }
+      },
+      '/api/v1/ebay/disconnect': {
+        post: {
+          tags: ['eBay'],
+          summary: 'Disconnect eBay seller account',
+          description: 'Marks the local eBay OAuth connection as disconnected and clears stored encrypted token material.',
+          security: bearerSecurity,
+          responses: { '200': { description: 'OK' } }
+        }
+      },
       '/api/v1/shopify/import-products': {
         post: {
           tags: ['Shopify'],

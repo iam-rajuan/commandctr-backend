@@ -560,6 +560,10 @@ const exchangeOAuthCodeForToken = async (shopDomain: string, code: string) => {
 const resolveShopifyAccess = async (userId: string): Promise<ResolvedShopifyAccess> => {
   const connection = await marketplaceConnectionService.getShopifyConnection(userId);
   if (connection?.accessTokenEncrypted) {
+    if (!connection.shopDomain) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Shopify store is missing its shop domain.');
+    }
+
     return {
       shopDomain: connection.shopDomain,
       accessToken: encryptionUtils.decrypt(connection.accessTokenEncrypted),
@@ -574,6 +578,10 @@ const resolveShopifyAccess = async (userId: string): Promise<ResolvedShopifyAcce
   if (env.NODE_ENV === 'development') {
     const sharedDevelopmentConnection = await marketplaceConnectionService.getLatestConnectedShopifyConnection();
     if (sharedDevelopmentConnection?.accessTokenEncrypted) {
+      if (!sharedDevelopmentConnection.shopDomain) {
+        throw new ApiError(httpStatus.BAD_REQUEST, 'Shared Shopify development connection is missing its shop domain.');
+      }
+
       logger.warn(
         {
           requestedUserId: userId,
