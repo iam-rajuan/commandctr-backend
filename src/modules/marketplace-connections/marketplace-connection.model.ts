@@ -52,4 +52,15 @@ marketplaceConnectionSchema.index(
   }
 );
 
+marketplaceConnectionSchema.index(
+  { userId: 1, marketplace: 1, environment: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      marketplace: 'etsy',
+      environment: { $exists: true, $type: 'string' }
+    }
+  }
+);
+
 export const MarketplaceConnectionModel = model<IMarketplaceConnection>('MarketplaceConnection', marketplaceConnectionSchema);

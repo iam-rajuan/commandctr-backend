@@ -30,7 +30,10 @@ const getPlatformBalances = (
   isShopifyConnected: boolean,
   amazonAmount: number,
   ebayAmount: number,
-  tiktokAmount: number
+  isEbayConnected: boolean,
+  tiktokAmount: number,
+  etsyAmount: number,
+  isEtsyConnected: boolean
 ): WalletPlatformBalance[] => [
   {
     platform: 'shopify',
@@ -53,8 +56,8 @@ const getPlatformBalances = (
     label: 'eBay Payout',
     amount: roundCurrency(ebayAmount),
     currency,
-    status: ebayAmount > 0 ? 'Connected' : 'Coming Soon',
-    isConnected: ebayAmount > 0
+    status: isEbayConnected ? 'Connected' : 'Not Connected',
+    isConnected: isEbayConnected
   },
   {
     platform: 'tiktok',
@@ -63,6 +66,14 @@ const getPlatformBalances = (
     currency,
     status: tiktokAmount > 0 ? 'Connected' : 'Coming Soon',
     isConnected: tiktokAmount > 0
+  },
+  {
+    platform: 'etsy',
+    label: 'Etsy Revenue',
+    amount: roundCurrency(etsyAmount),
+    currency,
+    status: isEtsyConnected ? 'Connected' : 'Not Connected',
+    isConnected: isEtsyConnected
   }
 ];
 
@@ -100,12 +111,14 @@ const buildActivityTitle = (type: WalletActivityType) => {
 
 export const walletService = {
   async getOverview(userId: string): Promise<WalletOverview> {
-    const [orders, shopifyConnection] = await Promise.all([
+    const [orders, shopifyConnection, etsyConnection, ebayConnection] = await Promise.all([
       OrderModel.find({ userId })
         .select('shopifyOrderId externalOrderId orderName financialStatus totalPrice currency processedAt createdAt marketplace')
         .sort({ processedAt: -1, createdAt: -1 })
         .lean(),
-      marketplaceConnectionService.getShopifyConnection(userId).catch(() => null)
+      marketplaceConnectionService.getShopifyConnection(userId).catch(() => null),
+      marketplaceConnectionService.getEtsyConnection(userId).catch(() => null),
+      marketplaceConnectionService.getEbayConnection(userId).catch(() => null)
     ]);
 
     const currencyCounts = new Map<string, number>();
@@ -129,6 +142,7 @@ export const walletService = {
     let amazonAmount = 0;
     let ebayAmount = 0;
     let tiktokAmount = 0;
+    let etsyAmount = 0;
 
     const recentActivity: WalletActivityItem[] = ordersInPrimaryCurrency.slice(0, 10).map((order) => {
       const financialStatus = normalizeFinancialStatus(order.financialStatus);
@@ -147,6 +161,8 @@ export const walletService = {
           ebayAmount += amount;
         } else if (platform === 'tiktok') {
           tiktokAmount += amount;
+        } else if (platform === 'etsy') {
+          etsyAmount += amount;
         }
       } else if (type === 'ORDER_PENDING') {
         pendingRevenue += amount;
@@ -159,6 +175,7 @@ export const walletService = {
         if (p === 'amazon') return 'Amazon';
         if (p === 'ebay') return 'eBay';
         if (p === 'tiktok') return 'TikTok';
+        if (p === 'etsy') return 'Etsy';
         return 'Shopify';
       };
 
@@ -198,6 +215,8 @@ export const walletService = {
           ebayAmount += amount;
         } else if (platform === 'tiktok') {
           tiktokAmount += amount;
+        } else if (platform === 'etsy') {
+          etsyAmount += amount;
         }
       } else if (PENDING_STATUSES.has(financialStatus)) {
         pendingRevenue += amount;
@@ -224,7 +243,10 @@ export const walletService = {
         Boolean(shopifyConnection),
         amazonAmount,
         ebayAmount,
-        tiktokAmount
+        Boolean(ebayConnection && ebayConnection.status === 'connected'),
+        tiktokAmount,
+        etsyAmount,
+        Boolean(etsyConnection && etsyConnection.status === 'connected')
       ),
       recentActivity,
       notice

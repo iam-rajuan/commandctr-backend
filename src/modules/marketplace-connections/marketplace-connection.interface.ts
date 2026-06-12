@@ -1,6 +1,6 @@
 import { HydratedDocument } from 'mongoose';
 
-export type MarketplaceConnectionMarketplace = 'shopify' | 'ebay';
+export type MarketplaceConnectionMarketplace = 'shopify' | 'ebay' | 'etsy';
 export type MarketplaceConnectionStatus = 'connected' | 'disconnected' | 'error';
 export type MarketplaceConnectionEnvironment = 'sandbox' | 'production';
 

@@ -299,6 +299,53 @@ const buildSandboxOrders = (userId: string) => {
       shippedAt: new Date(now - 1000 * 60 * 60 * 21),
       isSandbox: true,
       lastSyncedAt: new Date()
+    },
+    {
+      userId,
+      marketplace: 'etsy',
+      externalOrderId: 'SANDBOX-ETS-1004',
+      shopifyOrderId: 'SANDBOX-ETS-1004',
+      orderName: '#SBX-1004',
+      email: 'leslie.alexander@example.com',
+      customerName: 'Leslie Alexander',
+      phone: '+1 (555) 010-1004',
+      financialStatus: 'PAID',
+      fulfillmentStatus: 'UNFULFILLED',
+      statusOverride: 'Pending',
+      currency: 'USD',
+      totalPrice: '78.50',
+      subtotalPrice: '72.00',
+      totalTax: '6.50',
+      processedAt: new Date(now - 1000 * 60 * 60 * 12),
+      lineItems: [
+        {
+          title: 'Premium Leather Headcover',
+          sku: 'SBX-COVER-LH',
+          quantity: 1,
+          price: '72.00'
+        }
+      ],
+      shippingAddress: {
+        name: 'Leslie Alexander',
+        address1: '3890 19th St.',
+        city: 'San Francisco',
+        province: 'CA',
+        zip: '94114',
+        country: 'United States',
+        phone: '+1 (555) 010-1004',
+        formatted: ['Leslie Alexander', '3890 19th St.', 'San Francisco, CA 94114', 'United States']
+      },
+      billingAddress: {
+        name: 'Leslie Alexander',
+        address1: '3890 19th St.',
+        city: 'San Francisco',
+        province: 'CA',
+        zip: '94114',
+        country: 'United States',
+        formatted: ['Leslie Alexander', '3890 19th St.', 'San Francisco, CA 94114', 'United States']
+      },
+      isSandbox: true,
+      lastSyncedAt: new Date()
     }
   ];
 };

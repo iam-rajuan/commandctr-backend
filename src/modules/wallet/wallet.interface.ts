@@ -1,7 +1,7 @@
 export type WalletActivityType = 'ORDER_PAID' | 'ORDER_PENDING' | 'ORDER_REFUNDED' | 'ORDER_CREATED';
 
 export type WalletPlatformBalance = {
-  platform: 'shopify' | 'amazon' | 'ebay' | 'tiktok';
+  platform: 'shopify' | 'amazon' | 'ebay' | 'tiktok' | 'etsy';
   label: string;
   amount: number;
   currency: string;

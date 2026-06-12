@@ -161,6 +161,56 @@ export const marketplaceConnectionService = {
     );
   },
 
+  async getEtsyConnection(userId: string, environment?: MarketplaceConnectionEnvironment) {
+    return this.getConnection(userId, 'etsy', environment);
+  },
+
+  async upsertEtsyConnection(payload: {
+    userId: string;
+    accessTokenEncrypted: string;
+    refreshTokenEncrypted?: string;
+    accessTokenExpiresAt?: Date;
+    refreshTokenExpiresAt?: Date;
+    scopes: string[];
+    environment: MarketplaceConnectionEnvironment;
+    providerAccountRef?: string;
+    displayName?: string;
+    status?: IMarketplaceConnection['status'];
+    metadata?: Record<string, unknown>;
+    connectedAt?: Date;
+    disconnectedAt?: Date;
+    lastCheckedAt?: Date;
+    lastSyncedAt?: Date;
+  }) {
+    return this.upsertConnection({
+      userId: payload.userId,
+      marketplace: 'etsy',
+      accessTokenEncrypted: payload.accessTokenEncrypted,
+      refreshTokenEncrypted: payload.refreshTokenEncrypted,
+      accessTokenExpiresAt: payload.accessTokenExpiresAt,
+      refreshTokenExpiresAt: payload.refreshTokenExpiresAt,
+      scopes: payload.scopes,
+      environment: payload.environment,
+      providerAccountRef: payload.providerAccountRef,
+      displayName: payload.displayName,
+      status: payload.status,
+      metadata: payload.metadata,
+      connectedAt: payload.connectedAt,
+      disconnectedAt: payload.disconnectedAt,
+      lastCheckedAt: payload.lastCheckedAt,
+      lastSyncedAt: payload.lastSyncedAt
+    });
+  },
+
+  async markEtsyDisconnected(userId: string, environment?: MarketplaceConnectionEnvironment) {
+    return this.markConnectionDisconnected(
+      userId,
+      'etsy',
+      environment,
+      'Etsy shop is not connected.'
+    );
+  },
+
   async markShopifyChecked(userId: string, status: 'connected' | 'error') {
     const connection = await this.getShopifyConnection(userId);
     if (!connection) {
