@@ -58,11 +58,13 @@ export const shopifyController = {
     res.status(httpStatus.CREATED).json(ApiResponse.success('Shopify product created successfully', result));
   }),
   updateProduct: asyncHandler(async (req, res) => {
-    const result = await shopifyService.updateProduct(req.user!.userId, getParam(req.params.shopifyProductId), req.body);
+    const shopifyProductId = getParam(req.params.shopifyProductId) || getParam(req.query.shopifyProductId) || getParam(req.query.id);
+    const result = await shopifyService.updateProduct(req.user!.userId, shopifyProductId, req.body);
     res.status(httpStatus.OK).json(ApiResponse.success('Shopify product updated successfully', result));
   }),
   updatePrice: asyncHandler(async (req, res) => {
-    const result = await shopifyService.updateProductPrice(req.user!.userId, getParam(req.params.shopifyProductId), req.body);
+    const shopifyProductId = getParam(req.params.shopifyProductId) || getParam(req.query.shopifyProductId) || getParam(req.query.id);
+    const result = await shopifyService.updateProductPrice(req.user!.userId, shopifyProductId, req.body);
     res.status(httpStatus.OK).json(ApiResponse.success('Shopify product price updated successfully', result));
   }),
   getOrders: asyncHandler(async (req, res) => {
