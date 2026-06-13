@@ -330,12 +330,8 @@ export const marketplaceConnectionService = {
           metadata: 1
         }
       },
-      { new: true }
+      { upsert: true, new: true, setDefaultsOnInsert: true }
     );
-
-    if (!connection) {
-      throw new ApiError(httpStatus.NOT_FOUND, notFoundMessage);
-    }
 
     return connection;
   }

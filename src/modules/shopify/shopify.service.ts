@@ -1945,6 +1945,18 @@ const getStoredShopifyScopes = async (userId: string) => {
   return new Set(connection.scopes.map((scope) => scope.trim()).filter(Boolean));
 };
 
+const hasEffectiveShopifyScope = (scopes: Set<string>, scope: string) => {
+  if (scopes.has(scope)) {
+    return true;
+  }
+
+  if (scope.startsWith('read_')) {
+    return scopes.has(`write_${scope.slice('read_'.length)}`);
+  }
+
+  return false;
+};
+
 const hasDisputeScopeHints = (scopes: Set<string> | null) => {
   if (!scopes) {
     return false;
@@ -2011,7 +2023,7 @@ const canManageShopifyPublications = async (userId: string, shouldPublish: boole
   const requiredScopes = shouldPublish
     ? ['read_publications', 'write_publications']
     : ['read_publications'];
-  const missingScopes = requiredScopes.filter((scope) => !scopes.has(scope));
+  const missingScopes = requiredScopes.filter((scope) => !hasEffectiveShopifyScope(scopes, scope));
 
   return {
     allowed: missingScopes.length === 0,
