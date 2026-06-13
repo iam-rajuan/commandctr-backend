@@ -28,4 +28,5 @@ shopifyRouter.post('/import-orders', shopifyController.importOrders);
 shopifyRouter.post('/import-disputes', shopifyController.importDisputes);
 shopifyRouter.get('/locations', shopifyController.getLocations);
 shopifyRouter.get('/inventory', shopifyController.getInventory);
+shopifyRouter.patch('/inventory', validateRequest(shopifyValidation.updateInventory), shopifyController.updateInventory);
 shopifyRouter.patch('/inventory/:inventoryItemId', validateRequest(shopifyValidation.updateInventory), shopifyController.updateInventory);

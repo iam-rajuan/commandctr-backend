@@ -88,7 +88,8 @@ export const shopifyController = {
     res.status(httpStatus.OK).json(ApiResponse.success('Shopify inventory fetched successfully', result));
   }),
   updateInventory: asyncHandler(async (req, res) => {
-    const result = await shopifyService.updateInventoryQuantity(req.user!.userId, getParam(req.params.inventoryItemId), req.body);
+    const inventoryItemId = getParam(req.params.inventoryItemId) || getParam(req.query.inventoryItemId) || getParam(req.query.id);
+    const result = await shopifyService.updateInventoryQuantity(req.user!.userId, inventoryItemId, req.body);
     res.status(httpStatus.OK).json(ApiResponse.success('Shopify inventory updated successfully', result));
   })
 };
