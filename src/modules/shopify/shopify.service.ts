@@ -844,41 +844,40 @@ const syncInventoryRowsFromShopifyProduct = async ({
       );
       liveKeys.push(buildInventoryRowKey(inventoryItemId, locationId));
 
-      await InventoryModel.findOneAndUpdate(
-        { userId, inventoryItemId, locationId },
-        {
-          $set: {
-            ...mappedInventory,
-            productId: localProduct?._id ? localProduct._id.toString() : undefined,
-            marketplace: 'shopify',
-            shopifyProductId: shopifyProduct.id,
-            shopifyVariantId: variant.id,
-            inventoryItemId,
-            sku: variant.sku ?? existing?.sku ?? '',
-            title: mappedInventory.title || `${shopifyProduct.title} - ${variant.title}`,
-            shopifyQuantity: availability.shopifyQuantity,
-            availableQuantity: availability.availableQuantity,
-            safetyBuffer: availability.safetyBuffer,
-            lowStockThreshold: availability.lowStockThreshold,
-            isActive: true,
-            sourceStatus: 'active',
-            locationId,
-            locationName,
-            lastSyncedAt: new Date()
-          },
-          $setOnInsert: {
-            safetyBuffer: 0,
-            lowStockThreshold: 5,
-            isActive: true,
-            sourceStatus: 'active'
-          },
-          $unset: {
-            staleReason: 1,
-            staleMarkedAt: 1
+      const nextInventoryPayload = {
+        ...mappedInventory,
+        productId: localProduct?._id ? localProduct._id.toString() : undefined,
+        marketplace: 'shopify' as const,
+        shopifyProductId: shopifyProduct.id,
+        shopifyVariantId: variant.id,
+        inventoryItemId,
+        sku: variant.sku ?? existing?.sku ?? '',
+        title: mappedInventory.title || `${shopifyProduct.title} - ${variant.title}`,
+        shopifyQuantity: availability.shopifyQuantity,
+        availableQuantity: availability.availableQuantity,
+        safetyBuffer: availability.safetyBuffer,
+        lowStockThreshold: availability.lowStockThreshold,
+        isActive: true,
+        sourceStatus: 'active' as const,
+        locationId,
+        locationName,
+        lastSyncedAt: new Date()
+      };
+
+      if (existing) {
+        await InventoryModel.updateOne(
+          { _id: existing._id },
+          {
+            $set: nextInventoryPayload,
+            $unset: {
+              staleReason: 1,
+              staleMarkedAt: 1
+            }
           }
-        },
-        { upsert: true, new: true }
-      );
+        );
+      } else {
+        await InventoryModel.create(nextInventoryPayload);
+      }
 
       if (existing) {
         updatedCount += 1;
@@ -961,6 +960,45 @@ const updateShopifyInventoryItemSku = async (userId: string, inventoryItemId: st
     throw new ApiError(
       httpStatus.BAD_REQUEST,
       data.inventoryItemUpdate.userErrors[0]?.message ?? 'Shopify variant SKU update failed'
+    );
+  }
+
+  return data.inventoryItemUpdate.inventoryItem;
+};
+
+const updateShopifyInventoryItem = async (
+  userId: string,
+  inventoryItemId: string,
+  input: Record<string, unknown>
+) => {
+  const { data } = await executeShopifyRequest<{
+    inventoryItemUpdate: {
+      inventoryItem: { id: string; sku?: string } | null;
+      userErrors: Array<{ message: string }>;
+    };
+  }>(
+    userId,
+    `
+      mutation UpdateInventoryItem($id: ID!, $input: InventoryItemInput!) {
+        inventoryItemUpdate(id: $id, input: $input) {
+          inventoryItem {
+            id
+            sku
+          }
+          userErrors { message }
+        }
+      }
+    `,
+    {
+      id: inventoryItemId,
+      input
+    }
+  );
+
+  if (data.inventoryItemUpdate.userErrors.length) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      data.inventoryItemUpdate.userErrors[0]?.message ?? 'Shopify inventory item update failed'
     );
   }
 
@@ -1095,7 +1133,7 @@ const normalizeShopifyWeightUnit = (weightUnit: string | undefined) => {
   return undefined;
 };
 
-const getNormalizedShopifyOptions = (payload: ShopifyProductMutationPayload) => {
+const getExplicitShopifyOptions = (payload: ShopifyProductMutationPayload) => {
   const normalizedOptions = (payload.options ?? [])
     .map((option) => ({
       name: option.name.trim(),
@@ -1103,11 +1141,7 @@ const getNormalizedShopifyOptions = (payload: ShopifyProductMutationPayload) => 
     }))
     .filter((option) => option.name && option.values.length);
 
-  if (normalizedOptions.length) {
-    return normalizedOptions;
-  }
-
-  return [{ name: 'Title', values: ['Default Title'] }];
+  return normalizedOptions;
 };
 
 const parseShopifyMetafieldKey = (rawKey: string) => {
@@ -1366,7 +1400,7 @@ const buildShopifyProductSetVariantInput = ({
   variant: ShopifyProductMutationPayload['variants'][number];
   position: number;
 }) => {
-  const normalizedOptions = getNormalizedShopifyOptions(payload);
+  const normalizedOptions = getExplicitShopifyOptions(payload);
   return {
     barcode: variant.barcode?.trim() || payload.barcode?.trim() || undefined,
     compareAtPrice: variant.compareAtPrice?.trim() || payload.compareAtPrice?.trim() || undefined,
@@ -1396,7 +1430,7 @@ const buildShopifyProductSetInput = async ({
     warnings.push(`Shopify collection "${collection}" was not found.`);
   }
 
-  const normalizedOptions = getNormalizedShopifyOptions(payload);
+  const normalizedOptions = getExplicitShopifyOptions(payload);
 
   return {
     input: {
@@ -1415,23 +1449,27 @@ const buildShopifyProductSetInput = async ({
           }
         : undefined,
       metafields: buildShopifyMetafieldInputs(payload.metafields),
-      productOptions: normalizedOptions.map((option, index) => ({
-        name: option.name,
-        position: index + 1,
-        values: option.values.map((value) => ({ name: value }))
-      })),
+      productOptions: normalizedOptions.length
+        ? normalizedOptions.map((option, index) => ({
+            name: option.name,
+            position: index + 1,
+            values: option.values.map((value) => ({ name: value }))
+          }))
+        : undefined,
       status: payload.status,
       tags: payload.tags ?? [],
-      variants: payload.variants.map((variant, index) =>
-        buildShopifyProductSetVariantInput({
-          payload: {
-            ...payload,
-            options: normalizedOptions
-          },
-          variant,
-          position: index + 1
-        })
-      )
+      variants: normalizedOptions.length
+        ? payload.variants.map((variant, index) =>
+            buildShopifyProductSetVariantInput({
+              payload: {
+                ...payload,
+                options: normalizedOptions
+              },
+              variant,
+              position: index + 1
+            })
+          )
+        : undefined
     }
   };
 };
@@ -1503,8 +1541,8 @@ const ensureShopifyInventoryActivated = async (userId: string, inventoryItemId: 
   }>(
     userId,
     `
-      mutation ActivateInventoryItem($inventoryItemId: ID!, $locationId: ID!) {
-        inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId) {
+      mutation ActivateInventoryItem($inventoryItemId: ID!, $locationId: ID!, $idempotencyKey: String!) {
+        inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId) @idempotent(key: $idempotencyKey) {
           inventoryLevel { id }
           userErrors { message }
         }
@@ -1512,7 +1550,8 @@ const ensureShopifyInventoryActivated = async (userId: string, inventoryItemId: 
     `,
     {
       inventoryItemId,
-      locationId
+      locationId,
+      idempotencyKey: createHash('sha256').update(`${inventoryItemId}:${locationId}`).digest('hex')
     }
   );
 
@@ -1983,17 +2022,54 @@ const canManageShopifyPublications = async (userId: string, shouldPublish: boole
 const syncPrimaryVariantDetails = async (
   userId: string,
   product: ShopifyProductNode,
+  payload: ShopifyProductMutationPayload,
   primaryVariant: ShopifyProductMutationPayload['variants'][0] | undefined,
   warnings: string[]
 ) => {
   const createdVariant = product.variants?.nodes?.[0];
+  if (!createdVariant || !primaryVariant) {
+    return;
+  }
 
-  if (createdVariant && primaryVariant?.price) {
+  if (primaryVariant.price || primaryVariant.compareAtPrice || primaryVariant.barcode || primaryVariant.trackInventory !== undefined) {
     try {
-      await updateShopifyVariantPrice(userId, product.id, createdVariant.id, primaryVariant.price);
+      const { data } = await executeShopifyRequest<{
+        productVariantsBulkUpdate: {
+          productVariants: Array<{ id: string }>;
+          userErrors: Array<{ message: string }>;
+        };
+      }>(
+        userId,
+        `
+          mutation UpdateDefaultVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+            productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+              productVariants { id }
+              userErrors { message }
+            }
+          }
+        `,
+        {
+          productId: product.id,
+          variants: [{
+            id: createdVariant.id,
+            price: primaryVariant.price,
+            compareAtPrice: primaryVariant.compareAtPrice?.trim() || undefined,
+            barcode: primaryVariant.barcode?.trim() || undefined,
+            taxable: true,
+            inventoryPolicy: primaryVariant.trackInventory === false ? 'DENY' : undefined
+          }]
+        }
+      );
+
+      if (data.productVariantsBulkUpdate.userErrors.length) {
+        throw new ApiError(
+          httpStatus.BAD_REQUEST,
+          data.productVariantsBulkUpdate.userErrors[0]?.message ?? 'Shopify default variant update failed'
+        );
+      }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown variant price update failure';
-      warnings.push(`Default variant price was not updated: ${message}`);
+      const message = error instanceof Error ? error.message : 'Unknown default variant update failure';
+      warnings.push(`Default variant fields were not updated: ${message}`);
       logger.warn(
         {
           userId,
@@ -2001,17 +2077,24 @@ const syncPrimaryVariantDetails = async (
           shopifyVariantId: createdVariant.id,
           message
         },
-        'Shopify product mutation completed but default variant price update failed'
+        'Shopify product mutation completed but default variant update failed'
       );
     }
   }
 
-  if (createdVariant?.inventoryItem?.id && primaryVariant?.sku) {
+  const inventoryItemInput = createdVariant.inventoryItem?.id
+    ? buildShopifyInventoryItemInput({
+        payload,
+        variant: primaryVariant
+      })
+    : undefined;
+
+  if (createdVariant.inventoryItem?.id && inventoryItemInput) {
     try {
-      await updateShopifyInventoryItemSku(userId, createdVariant.inventoryItem.id, primaryVariant.sku);
+      await updateShopifyInventoryItem(userId, createdVariant.inventoryItem.id, inventoryItemInput);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown variant SKU update failure';
-      warnings.push(`Default variant SKU was not updated: ${message}`);
+      const message = error instanceof Error ? error.message : 'Unknown inventory item update failure';
+      warnings.push(`Default variant inventory fields were not updated: ${message}`);
       logger.warn(
         {
           userId,
@@ -2019,7 +2102,7 @@ const syncPrimaryVariantDetails = async (
           inventoryItemId: createdVariant.inventoryItem.id,
           message
         },
-        'Shopify product mutation completed but default variant SKU update failed'
+        'Shopify product mutation completed but default inventory item update failed'
       );
     }
   }
@@ -2459,11 +2542,16 @@ export const shopifyService = {
 
   async createProduct(userId: string, payload: ShopifyProductMutationPayload): Promise<ShopifyProductMutationResult> {
     const warnings: string[] = [];
+    const explicitOptions = getExplicitShopifyOptions(payload);
     let finalProduct = await syncProductSetToShopify({
       userId,
       payload,
       warnings
     });
+    if (!explicitOptions.length) {
+      await syncPrimaryVariantDetails(userId, finalProduct, payload, payload.variants[0], warnings);
+      finalProduct = await fetchShopifyProductById(userId, finalProduct.id);
+    }
     await syncShopifyVariantInventory({ userId, product: finalProduct, payload, warnings });
     finalProduct = await fetchShopifyProductById(userId, finalProduct.id);
     const imageSyncResult = await syncShopifyProductImage(userId, finalProduct, payload.imagePath, payload.title, warnings);
@@ -2542,6 +2630,7 @@ export const shopifyService = {
         compareAtPrice: variant.compareAtPrice
       }))
     };
+    const explicitOptions = getExplicitShopifyOptions(mergedPayload);
 
     let finalProduct = await syncProductSetToShopify({
       userId,
@@ -2549,6 +2638,10 @@ export const shopifyService = {
       payload: mergedPayload,
       warnings
     });
+    if (!explicitOptions.length) {
+      await syncPrimaryVariantDetails(userId, finalProduct, mergedPayload, mergedPayload.variants[0], warnings);
+      finalProduct = await fetchShopifyProductById(userId, finalProduct.id);
+    }
     await syncShopifyVariantInventory({ userId, product: finalProduct, payload: mergedPayload, warnings });
     finalProduct = await fetchShopifyProductById(userId, finalProduct.id);
     const imageSyncResult = await syncShopifyProductImage(

@@ -37,7 +37,17 @@ export const shopifyClient = {
     const payload = (await response.json()) as ShopifyGraphQLResponse<T>;
 
     if (payload.errors?.length) {
-      logger.error({ errors: payload.errors.map((error) => error.message) }, 'Shopify GraphQL returned errors');
+      const operationSnippet = params.query
+        .split('\n')
+        .map((line) => line.trim())
+        .find((line) => line.startsWith('mutation') || line.startsWith('query'));
+      logger.error(
+        {
+          errors: payload.errors.map((error) => error.message),
+          operation: operationSnippet ?? 'unknown'
+        },
+        'Shopify GraphQL returned errors'
+      );
       throw new ApiError(httpStatus.BAD_GATEWAY, payload.errors[0]?.message ?? 'Shopify GraphQL returned an error');
     }
 
