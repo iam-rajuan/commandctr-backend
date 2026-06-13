@@ -1,3 +1,5 @@
+import { HydratedDocument } from 'mongoose';
+
 export interface ProductVariant {
   shopifyVariantId: string;
   title: string;
@@ -10,8 +12,8 @@ export interface ProductVariant {
 
 export interface IProduct {
   userId: string;
-  marketplace: 'shopify';
-  shopifyProductId: string;
+  marketplace: 'shopify' | 'ebay' | 'etsy';
+  shopifyProductId?: string;
   title: string;
   description?: string;
   handle?: string;
@@ -22,6 +24,16 @@ export interface IProduct {
   totalInventory?: number;
   featuredImage?: string;
   variants: ProductVariant[];
-  rawShopifyData: unknown;
+  rawShopifyData?: unknown;
   lastSyncedAt?: Date;
+  ebayInventoryItemId?: string;
+  ebayOfferId?: string;
+  ebayListingId?: string;
+  ebaySku?: string;
+  ebayMarketplaceId?: string;
+  ebayStatus?: 'draft' | 'active' | 'ended';
+  lastEbaySyncAt?: Date;
+  rawEbayPayload?: unknown;
 }
+
+export type ProductDocument = HydratedDocument<IProduct>;
