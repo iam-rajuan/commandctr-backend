@@ -253,6 +253,65 @@ const spec = swaggerJSDoc({
           responses: { '200': { description: 'OK' } }
         }
       },
+      '/api/v1/etsy/connect-url': {
+        get: {
+          tags: ['Etsy'],
+          summary: 'Generate Etsy OAuth connect URL',
+          description: 'Protected endpoint for CommandCtr merchants. Call this endpoint with Bearer auth, then redirect the browser to the returned connectUrl.',
+          security: bearerSecurity,
+          responses: {
+            '200': {
+              description: 'OK',
+              content: {
+                'application/json': {
+                  example: {
+                    success: true,
+                    message: 'Etsy connect URL generated successfully',
+                    data: {
+                      connectUrl: 'https://www.etsy.com/oauth/connect?...'
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      '/api/v1/etsy/callback': {
+        get: {
+          tags: ['Etsy'],
+          summary: 'Handle Etsy OAuth callback',
+          description: 'Public callback endpoint used by Etsy seller OAuth with PKCE. This endpoint exchanges the authorization code for encrypted OAuth tokens and redirects back to the integration page.',
+          parameters: [
+            { name: 'code', in: 'query', required: false, schema: { type: 'string' } },
+            { name: 'state', in: 'query', required: false, schema: { type: 'string' } },
+            { name: 'error', in: 'query', required: false, schema: { type: 'string' } },
+            { name: 'error_description', in: 'query', required: false, schema: { type: 'string' } }
+          ],
+          responses: {
+            '200': { description: 'Etsy connection established' },
+            '302': { description: 'Redirects to /integration with success or error query params if FRONTEND_URL is configured' }
+          }
+        }
+      },
+      '/api/v1/etsy/status': {
+        get: {
+          tags: ['Etsy'],
+          summary: 'Etsy seller connection status',
+          description: 'Returns the stored Etsy OAuth connection state only. No Etsy listing, inventory, or order operations are included in this OAuth-only flow.',
+          security: bearerSecurity,
+          responses: { '200': { description: 'OK' } }
+        }
+      },
+      '/api/v1/etsy/disconnect': {
+        post: {
+          tags: ['Etsy'],
+          summary: 'Disconnect Etsy seller account',
+          description: 'Marks the local Etsy OAuth connection as disconnected and clears stored encrypted token material.',
+          security: bearerSecurity,
+          responses: { '200': { description: 'OK' } }
+        }
+      },
       '/api/v1/shopify/import-products': {
         post: {
           tags: ['Shopify'],

@@ -29,3 +29,12 @@ export interface EbayStatusResponse {
   accessTokenExpiresAt: Date | null;
   status: MarketplaceConnectionStatus | 'not_connected';
 }
+
+export interface EbayCommerceStatusResponse {
+  productId: string;
+  sku?: string;
+  offerId?: string;
+  listingId?: string;
+  status: 'draft' | 'active' | 'ended';
+  offer?: unknown;
+}

@@ -4,12 +4,14 @@ import { app } from '@/app';
 import { connectDatabase } from '@/config/database';
 import { env } from '@/config/env';
 import { logger } from '@/config/logger';
+import { ebaySyncService } from '@/modules/ebay/ebay.sync.service';
 import { ensureDefaultAdmin } from '@/modules/seed/admin-seed.service';
 
 const startServer = async (): Promise<void> => {
   try {
     await connectDatabase();
     await ensureDefaultAdmin();
+    ebaySyncService.startWorker();
 
     const server = app.listen(env.PORT, () => {
       logger.info(
@@ -31,6 +33,7 @@ const startServer = async (): Promise<void> => {
         }
 
         void mongoose.connection.close().then(() => {
+          ebaySyncService.stopWorker();
           logger.info('HTTP server and MongoDB connection closed');
           process.exit(0);
         });

@@ -3,6 +3,18 @@ import { z } from 'zod';
 
 dotenv.config();
 
+const emptyStringToUndefined = (value: unknown) => {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  return trimmed === '' ? undefined : trimmed;
+};
+
+const optionalString = () => z.preprocess(emptyStringToUndefined, z.string().min(1).optional());
+const optionalUrl = () => z.preprocess(emptyStringToUndefined, z.string().url().optional());
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   TRUST_PROXY: z
@@ -22,7 +34,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(5000),
   API_PREFIX: z.string().min(1).default('/api/v1'),
   MONGODB_URI: z.string().min(1),
-  MONGODB_DNS_SERVERS: z.string().optional(),
+  MONGODB_DNS_SERVERS: optionalString(),
   JWT_ACCESS_SECRET: z.string().min(1),
   JWT_REFRESH_SECRET: z.string().min(1),
   JWT_ACCESS_EXPIRES_IN: z.string().min(1).default('15m'),
@@ -36,32 +48,50 @@ const envSchema = z.object({
   AWS_SECRET_ACCESS_KEY: z.string().min(1),
   RESEND_API_KEY: z.string().min(1),
   RESEND_FROM_EMAIL: z.email(),
-  SHOPIFY_SHOP_DOMAIN: z.string().min(1).optional(),
+  SHOPIFY_SHOP_DOMAIN: optionalString(),
   SHOPIFY_API_VERSION: z.string().min(1).default('2026-04'),
-  SHOPIFY_CLIENT_ID: z.string().min(1).optional(),
-  SHOPIFY_CLIENT_SECRET: z.string().min(1).optional(),
-  SHOPIFY_APP_URL: z.string().url().optional(),
-  SHOPIFY_REDIRECT_URI: z.string().url().optional(),
-  SHOPIFY_ADMIN_ACCESS_TOKEN: z.string().min(1).optional(),
+  SHOPIFY_CLIENT_ID: optionalString(),
+  SHOPIFY_CLIENT_SECRET: optionalString(),
+  SHOPIFY_APP_URL: optionalUrl(),
+  SHOPIFY_REDIRECT_URI: optionalUrl(),
+  SHOPIFY_ADMIN_ACCESS_TOKEN: optionalString(),
   EBAY_ENVIRONMENT: z.enum(['sandbox', 'production']).optional(),
-  EBAY_CLIENT_ID: z.string().min(1).optional(),
-  EBAY_CLIENT_SECRET: z.string().min(1).optional(),
-  EBAY_RU_NAME: z.string().min(1).optional(),
-  EBAY_REDIRECT_URI: z.string().url().optional(),
-  EBAY_SCOPES: z.string().min(1).optional(),
-  EBAY_SANDBOX_CLIENT_ID: z.string().min(1).optional(),
-  EBAY_SANDBOX_CLIENT_SECRET: z.string().min(1).optional(),
-  EBAY_SANDBOX_RU_NAME: z.string().min(1).optional(),
-  EBAY_SANDBOX_REDIRECT_URI: z.string().url().optional(),
-  EBAY_SANDBOX_AUTH_URL: z.string().url().optional(),
-  EBAY_SANDBOX_TOKEN_URL: z.string().url().optional(),
-  EBAY_PRODUCTION_CLIENT_ID: z.string().min(1).optional(),
-  EBAY_PRODUCTION_CLIENT_SECRET: z.string().min(1).optional(),
-  EBAY_PRODUCTION_RU_NAME: z.string().min(1).optional(),
-  EBAY_PRODUCTION_REDIRECT_URI: z.string().url().optional(),
-  EBAY_PRODUCTION_AUTH_URL: z.string().url().optional(),
-  EBAY_PRODUCTION_TOKEN_URL: z.string().url().optional(),
-  FRONTEND_URL: z.string().url().optional(),
+  EBAY_CLIENT_ID: optionalString(),
+  EBAY_CLIENT_SECRET: optionalString(),
+  EBAY_RU_NAME: optionalString(),
+  EBAY_REDIRECT_URI: optionalUrl(),
+  EBAY_SCOPES: optionalString(),
+  EBAY_API_BASE_URL: optionalUrl(),
+  EBAY_MARKETPLACE_ID: optionalString(),
+  EBAY_MERCHANT_LOCATION_KEY: optionalString(),
+  EBAY_PAYMENT_POLICY_ID: optionalString(),
+  EBAY_RETURN_POLICY_ID: optionalString(),
+  EBAY_FULFILLMENT_POLICY_ID: optionalString(),
+  EBAY_DEFAULT_CATEGORY_ID: optionalString(),
+  EBAY_DEFAULT_CURRENCY: optionalString(),
+  EBAY_LISTING_FORMAT: optionalString(),
+  EBAY_LISTING_DURATION: optionalString(),
+  EBAY_DEFAULT_CONDITION: optionalString(),
+  EBAY_SANDBOX_CLIENT_ID: optionalString(),
+  EBAY_SANDBOX_CLIENT_SECRET: optionalString(),
+  EBAY_SANDBOX_RU_NAME: optionalString(),
+  EBAY_SANDBOX_REDIRECT_URI: optionalUrl(),
+  EBAY_SANDBOX_AUTH_URL: optionalUrl(),
+  EBAY_SANDBOX_TOKEN_URL: optionalUrl(),
+  EBAY_PRODUCTION_CLIENT_ID: optionalString(),
+  EBAY_PRODUCTION_CLIENT_SECRET: optionalString(),
+  EBAY_PRODUCTION_RU_NAME: optionalString(),
+  EBAY_PRODUCTION_REDIRECT_URI: optionalUrl(),
+  EBAY_PRODUCTION_AUTH_URL: optionalUrl(),
+  EBAY_PRODUCTION_TOKEN_URL: optionalUrl(),
+  ETSY_CLIENT_ID: optionalString(),
+  ETSY_REDIRECT_URI: optionalUrl(),
+  ETSY_SCOPES: optionalString(),
+  ETSY_AUTH_URL: optionalUrl(),
+  ETSY_TOKEN_URL: optionalUrl(),
+  ETSY_API_BASE_URL: optionalUrl(),
+  ETSY_SHARED_SECRET: optionalString(),
+  FRONTEND_URL: optionalUrl(),
   ENCRYPTION_SECRET: z.string().min(32)
 });
 
