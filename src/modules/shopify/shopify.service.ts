@@ -14,6 +14,7 @@ import { ProductModel } from '@/modules/products/product.model';
 import { syncLogService } from '@/modules/sync/sync-log.service';
 import { ApiError } from '@/shared/api-error';
 import { encryptionUtils } from '@/utils/encryption';
+import { toSlug } from '@/utils/slug';
 
 import { shopifyClient } from './shopify.client';
 import { shopifyMapper } from './shopify.mapper';
@@ -27,9 +28,11 @@ type ShopifyVariantNode = {
   id: string;
   title: string;
   sku?: string;
+  barcode?: string;
   price?: string;
   compareAtPrice?: string;
   inventoryQuantity?: number;
+  selectedOptions?: Array<{ name?: string; value?: string }>;
   inventoryItem?: {
     id?: string;
     tracked?: boolean;
@@ -46,6 +49,9 @@ type ShopifyProductNode = {
   vendor?: string;
   productType?: string;
   category?: { id: string; fullName?: string; name?: string };
+  collections?: {
+    nodes?: Array<{ id: string; title?: string }>;
+  };
   status?: string;
   tags?: string[];
   totalInventory?: number;
@@ -149,11 +155,47 @@ type ShopifyProductMutationPayload = {
   vendor?: string;
   productType?: string;
   category?: string;
+  handle?: string;
   status?: string;
   tags?: string[];
   imagePath?: string;
   publishToOnlineStore?: boolean;
-  variants: Array<{ title: string; price: string; sku?: string }>;
+  compareAtPrice?: string;
+  costPerItem?: string;
+  chargeTax?: boolean;
+  barcode?: string;
+  inventoryTracked?: boolean;
+  continueSellingOutOfStock?: boolean;
+  stockLocations?: Array<{
+    name: string;
+    available: number;
+    onHand?: number;
+    unavailable?: number;
+    committed?: number;
+  }>;
+  physicalProduct?: boolean;
+  weight?: number;
+  weightUnit?: string;
+  countryOfOrigin?: string;
+  hsCode?: string;
+  collections?: string[];
+  themeTemplate?: string;
+  seoTitle?: string;
+  seoDescription?: string;
+  seoHandle?: string;
+  metafields?: Record<string, string>;
+  options?: Array<{ name: string; values: string[] }>;
+  variants: Array<{
+    title: string;
+    price: string;
+    sku?: string;
+    inventoryQuantity?: number;
+    trackInventory?: boolean;
+    barcode?: string;
+    compareAtPrice?: string;
+    weight?: number;
+    weightUnit?: string;
+  }>;
 };
 
 type ShopifyProductMutationResult = {
@@ -214,6 +256,17 @@ const productSelection = `
   handle
   vendor
   productType
+  category {
+    id
+    name
+    fullName
+  }
+  collections(first: 100) {
+    nodes {
+      id
+      title
+    }
+  }
   status
   tags
   totalInventory
@@ -235,9 +288,14 @@ const productSelection = `
       id
       title
       sku
+      barcode
       price
       compareAtPrice
       inventoryQuantity
+      selectedOptions {
+        name
+        value
+      }
       inventoryItem {
         id
         tracked
@@ -1006,6 +1064,839 @@ const resolveShopifyCategoryId = async (userId: string, category: string | undef
   }
 };
 
+const normalizeShopifyTemplateSuffix = (themeTemplate: string | undefined) => {
+  const normalized = themeTemplate?.trim();
+  if (!normalized || normalized.toLowerCase() === 'default product') {
+    return undefined;
+  }
+
+  return normalized.replace(/^product\./i, '').trim();
+};
+
+const normalizeShopifyWeightUnit = (weightUnit: string | undefined) => {
+  const normalized = weightUnit?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (normalized === 'lb' || normalized === 'lbs' || normalized === 'pound' || normalized === 'pounds') {
+    return 'POUNDS';
+  }
+  if (normalized === 'oz' || normalized === 'ounce' || normalized === 'ounces') {
+    return 'OUNCES';
+  }
+  if (normalized === 'kg' || normalized === 'kilogram' || normalized === 'kilograms') {
+    return 'KILOGRAMS';
+  }
+  if (normalized === 'g' || normalized === 'gram' || normalized === 'grams') {
+    return 'GRAMS';
+  }
+
+  return undefined;
+};
+
+const getNormalizedShopifyOptions = (payload: ShopifyProductMutationPayload) => {
+  const normalizedOptions = (payload.options ?? [])
+    .map((option) => ({
+      name: option.name.trim(),
+      values: option.values.map((value) => value.trim()).filter(Boolean)
+    }))
+    .filter((option) => option.name && option.values.length);
+
+  if (normalizedOptions.length) {
+    return normalizedOptions;
+  }
+
+  return [{ name: 'Title', values: ['Default Title'] }];
+};
+
+const parseShopifyMetafieldKey = (rawKey: string) => {
+  const trimmed = rawKey.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const [maybeNamespace, ...rest] = trimmed.split('.');
+  if (rest.length === 0) {
+    const key = toSlug(maybeNamespace ?? '');
+    return key ? { namespace: 'custom', key } : null;
+  }
+
+  const namespace = toSlug(maybeNamespace ?? '');
+  const key = toSlug(rest.join('.'));
+  if (!namespace || !key) {
+    return null;
+  }
+
+  return { namespace, key };
+};
+
+const buildShopifyMetafieldInputs = (metafields: ShopifyProductMutationPayload['metafields']) => {
+  if (!metafields) {
+    return undefined;
+  }
+
+  const entries = Object.entries(metafields)
+    .map(([rawKey, rawValue]) => {
+      const parsedKey = parseShopifyMetafieldKey(rawKey);
+      const value = rawValue?.trim();
+      if (!parsedKey || !value) {
+        return null;
+      }
+
+      const type = value.includes('\n')
+        ? 'multi_line_text_field'
+        : /^(true|false)$/i.test(value)
+          ? 'boolean'
+          : /^-?\d+(\.\d+)?$/.test(value)
+            ? 'number_decimal'
+            : 'single_line_text_field';
+
+      return {
+        namespace: parsedKey.namespace,
+        key: parsedKey.key,
+        type,
+        value
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+
+  return entries.length ? entries : undefined;
+};
+
+const resolveShopifyCollectionIds = async (userId: string, collections: string[] | undefined) => {
+  const desiredCollections = (collections ?? []).map((value) => value.trim()).filter(Boolean);
+  if (!desiredCollections.length) {
+    return { ids: [] as string[], missing: [] as string[] };
+  }
+
+  const { data } = await executeShopifyRequest<{
+    collections: {
+      nodes: Array<{ id: string; title?: string; handle?: string }>;
+    };
+  }>(
+    userId,
+    `
+      query GetCollectionsForProductSync {
+        collections(first: 100) {
+          nodes {
+            id
+            title
+            handle
+          }
+        }
+      }
+    `
+  );
+
+  const lookup = new Map<string, string>();
+  for (const collection of data.collections.nodes) {
+    if (collection.title) {
+      lookup.set(collection.title.trim().toLowerCase(), collection.id);
+    }
+    if (collection.handle) {
+      lookup.set(collection.handle.trim().toLowerCase(), collection.id);
+    }
+  }
+
+  const ids: string[] = [];
+  const missing: string[] = [];
+  for (const collectionName of desiredCollections) {
+    const matchedId = lookup.get(collectionName.toLowerCase()) ?? lookup.get(toSlug(collectionName));
+    if (matchedId) {
+      ids.push(matchedId);
+    } else {
+      missing.push(collectionName);
+    }
+  }
+
+  return { ids: [...new Set(ids)], missing };
+};
+
+const resolveShopifyLocationsByName = async (userId: string, stockLocations: ShopifyProductMutationPayload['stockLocations']) => {
+  if (!stockLocations?.length) {
+    return [];
+  }
+
+  const { data } = await executeShopifyRequest<{
+    locations: {
+      nodes: Array<{ id: string; name?: string }>;
+    };
+  }>(
+    userId,
+    `
+      query GetLocationsForProductSync {
+        locations(first: 50) {
+          nodes {
+            id
+            name
+          }
+        }
+      }
+    `
+  );
+
+  const byName = new Map(
+    data.locations.nodes
+      .filter((node): node is { id: string; name: string } => Boolean(node.id && node.name))
+      .map((node) => [node.name.trim().toLowerCase(), node])
+  );
+
+  return stockLocations.map((location) => ({
+    requested: location,
+    matched: byName.get(location.name.trim().toLowerCase()) ?? null
+  }));
+};
+
+const buildShopifyInventoryItemInput = ({
+  payload,
+  variant
+}: {
+  payload: ShopifyProductMutationPayload;
+  variant: ShopifyProductMutationPayload['variants'][number];
+}) => {
+  const weightValue = variant.weight ?? payload.weight;
+  const weightUnit = variant.weightUnit ?? payload.weightUnit;
+  const cost = payload.costPerItem?.trim();
+  const countryCodeOfOrigin = payload.countryOfOrigin?.trim().toUpperCase();
+  const harmonizedSystemCode = payload.hsCode?.trim();
+  const sku = variant.sku?.trim();
+
+  const input: Record<string, unknown> = {};
+
+  if (typeof variant.trackInventory === 'boolean') {
+    input.tracked = variant.trackInventory;
+  } else if (typeof payload.inventoryTracked === 'boolean') {
+    input.tracked = payload.inventoryTracked;
+  }
+
+  if (sku) {
+    input.sku = sku;
+  }
+
+  if (typeof payload.physicalProduct === 'boolean') {
+    input.requiresShipping = payload.physicalProduct;
+  }
+
+  if (cost) {
+    input.cost = cost;
+  }
+
+  if (countryCodeOfOrigin) {
+    input.countryCodeOfOrigin = countryCodeOfOrigin;
+  }
+
+  if (harmonizedSystemCode) {
+    input.harmonizedSystemCode = harmonizedSystemCode;
+  }
+
+  const normalizedWeightUnit = normalizeShopifyWeightUnit(weightUnit);
+  if (typeof weightValue === 'number' && Number.isFinite(weightValue) && weightValue >= 0 && normalizedWeightUnit) {
+    input.measurement = {
+      weight: {
+        value: weightValue,
+        unit: normalizedWeightUnit
+      }
+    };
+  }
+
+  return Object.keys(input).length ? input : undefined;
+};
+
+const buildVariantOptionValues = (
+  variant: ShopifyProductMutationPayload['variants'][number],
+  options: ShopifyProductMutationPayload['options']
+) => {
+  const normalizedOptions = (options ?? []).filter((option) => option.name.trim() && option.values.length);
+  if (!normalizedOptions.length) {
+    return undefined;
+  }
+
+  const parts = variant.title.split('/').map((part) => part.trim()).filter(Boolean);
+  if (parts.length !== normalizedOptions.length) {
+    return undefined;
+  }
+
+  return normalizedOptions.map((option, index) => ({
+    optionName: option.name,
+    name: parts[index] ?? option.values[0]
+  }));
+};
+
+const buildShopifyVariantBulkInput = ({
+  payload,
+  variant,
+  includeOptionValues,
+  inventoryQuantities
+}: {
+  payload: ShopifyProductMutationPayload;
+  variant: ShopifyProductMutationPayload['variants'][number];
+  includeOptionValues: boolean;
+  inventoryQuantities?: Array<{ locationId: string; availableQuantity: number }>;
+}) => {
+  const input: Record<string, unknown> = {
+    price: variant.price,
+    compareAtPrice: variant.compareAtPrice?.trim() || payload.compareAtPrice?.trim() || undefined,
+    barcode: variant.barcode?.trim() || payload.barcode?.trim() || undefined,
+    taxable: payload.chargeTax ?? true,
+    inventoryPolicy: payload.continueSellingOutOfStock ? 'CONTINUE' : 'DENY',
+    inventoryItem: buildShopifyInventoryItemInput({ payload, variant })
+  };
+
+  if (includeOptionValues) {
+    input.optionValues = buildVariantOptionValues(variant, payload.options);
+  }
+
+  if (inventoryQuantities?.length) {
+    input.inventoryQuantities = inventoryQuantities.map((entry) => ({
+      locationId: entry.locationId,
+      availableQuantity: entry.availableQuantity
+    }));
+  }
+
+  return input;
+};
+
+const buildShopifyProductSetVariantInput = ({
+  payload,
+  variant,
+  position
+}: {
+  payload: ShopifyProductMutationPayload;
+  variant: ShopifyProductMutationPayload['variants'][number];
+  position: number;
+}) => {
+  const normalizedOptions = getNormalizedShopifyOptions(payload);
+  return {
+    barcode: variant.barcode?.trim() || payload.barcode?.trim() || undefined,
+    compareAtPrice: variant.compareAtPrice?.trim() || payload.compareAtPrice?.trim() || undefined,
+    inventoryItem: buildShopifyInventoryItemInput({ payload, variant }),
+    inventoryPolicy: payload.continueSellingOutOfStock ? 'CONTINUE' : 'DENY',
+    optionValues: buildVariantOptionValues(variant, normalizedOptions),
+    position,
+    price: variant.price,
+    sku: variant.sku?.trim() || undefined,
+    taxable: payload.chargeTax ?? true
+  };
+};
+
+const buildShopifyProductSetInput = async ({
+  userId,
+  payload,
+  categoryId,
+  warnings
+}: {
+  userId: string;
+  payload: ShopifyProductMutationPayload;
+  categoryId: string | null;
+  warnings: string[];
+}) => {
+  const { ids: collectionIds, missing: missingCollections } = await resolveShopifyCollectionIds(userId, payload.collections);
+  for (const collection of missingCollections) {
+    warnings.push(`Shopify collection "${collection}" was not found.`);
+  }
+
+  const normalizedOptions = getNormalizedShopifyOptions(payload);
+
+  return {
+    input: {
+      title: payload.title,
+      descriptionHtml: payload.description,
+      vendor: payload.vendor,
+      productType: payload.productType,
+      category: categoryId ?? undefined,
+      handle: payload.seoHandle ?? payload.handle,
+      collections: payload.collections === undefined ? undefined : collectionIds,
+      templateSuffix: payload.themeTemplate === undefined ? undefined : normalizeShopifyTemplateSuffix(payload.themeTemplate),
+      seo: payload.seoTitle || payload.seoDescription
+        ? {
+            title: payload.seoTitle?.trim() || undefined,
+            description: payload.seoDescription?.trim() || undefined
+          }
+        : undefined,
+      metafields: buildShopifyMetafieldInputs(payload.metafields),
+      productOptions: normalizedOptions.map((option, index) => ({
+        name: option.name,
+        position: index + 1,
+        values: option.values.map((value) => ({ name: value }))
+      })),
+      status: payload.status,
+      tags: payload.tags ?? [],
+      variants: payload.variants.map((variant, index) =>
+        buildShopifyProductSetVariantInput({
+          payload: {
+            ...payload,
+            options: normalizedOptions
+          },
+          variant,
+          position: index + 1
+        })
+      )
+    }
+  };
+};
+
+const syncProductSetToShopify = async ({
+  userId,
+  identifier,
+  payload,
+  warnings
+}: {
+  userId: string;
+  identifier?: { id: string };
+  payload: ShopifyProductMutationPayload;
+  warnings: string[];
+}) => {
+  const categoryId = await resolveShopifyCategoryId(userId, payload.category);
+  if (payload.category && !categoryId) {
+    warnings.push(`Shopify category could not be matched for "${payload.category}".`);
+  }
+
+  const productSetPayload = await buildShopifyProductSetInput({
+    userId,
+    payload,
+    categoryId,
+    warnings
+  });
+
+  const { data } = await executeShopifyRequest<{
+    productSet: { product: ShopifyProductNode | null; userErrors: Array<{ message: string }> };
+  }>(
+    userId,
+    `
+      mutation SyncProductSet($identifier: ProductSetIdentifiers, $input: ProductSetInput!, $synchronous: Boolean!) {
+        productSet(identifier: $identifier, input: $input, synchronous: $synchronous) {
+          product {
+            ${productSelection}
+          }
+          userErrors { message }
+        }
+      }
+    `,
+    {
+      identifier,
+      input: productSetPayload.input,
+      synchronous: true
+    }
+  );
+
+  if (data.productSet.userErrors.length) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      data.productSet.userErrors[0]?.message ?? 'Shopify product sync failed'
+    );
+  }
+
+  if (!data.productSet.product?.id) {
+    throw new ApiError(httpStatus.BAD_GATEWAY, 'Shopify product sync completed without returning a product');
+  }
+
+  return data.productSet.product;
+};
+
+const ensureShopifyInventoryActivated = async (userId: string, inventoryItemId: string, locationId: string) => {
+  const { data } = await executeShopifyRequest<{
+    inventoryActivate: {
+      inventoryLevel: { id?: string } | null;
+      userErrors: Array<{ message: string }>;
+    };
+  }>(
+    userId,
+    `
+      mutation ActivateInventoryItem($inventoryItemId: ID!, $locationId: ID!) {
+        inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId) {
+          inventoryLevel { id }
+          userErrors { message }
+        }
+      }
+    `,
+    {
+      inventoryItemId,
+      locationId
+    }
+  );
+
+  const errorMessage = data.inventoryActivate.userErrors[0]?.message;
+  if (!errorMessage) {
+    return;
+  }
+
+  const lowered = errorMessage.toLowerCase();
+  if (lowered.includes('already') || lowered.includes('stocked')) {
+    return;
+  }
+
+  throw new ApiError(httpStatus.BAD_REQUEST, errorMessage);
+};
+
+const syncShopifyVariantInventory = async ({
+  userId,
+  product,
+  payload,
+  warnings
+}: {
+  userId: string;
+  product: ShopifyProductNode;
+  payload: ShopifyProductMutationPayload;
+  warnings: string[];
+}) => {
+  const variants = product.variants?.nodes ?? [];
+  if (!variants.length) {
+    return;
+  }
+
+  const resolvedLocations = await resolveShopifyLocationsByName(userId, payload.stockLocations);
+  for (const location of resolvedLocations) {
+    if (!location.matched) {
+      warnings.push(`Shopify location "${location.requested.name}" was not found, so inventory was not synced there.`);
+    }
+  }
+
+  const matchedLocations = resolvedLocations.filter((location) => Boolean(location.matched));
+  const trackedVariants = payload.variants.filter((variant) => {
+    const shouldTrackInventory =
+      typeof variant.trackInventory === 'boolean'
+        ? variant.trackInventory
+        : payload.inventoryTracked ?? true;
+    return shouldTrackInventory;
+  });
+
+  const buildVariantLocationAllocations = () => {
+    if (!matchedLocations.length || !trackedVariants.length) {
+      return new Map<string, Array<{ locationId: string; quantity: number }>>();
+    }
+
+    const locationTargets = matchedLocations.map((location) => ({
+      locationId: location.matched!.id,
+      remaining: inventoryUtils.coerceNonNegativeNumber(location.requested.available)
+    }));
+    const totalLocationQuantity = locationTargets.reduce((acc, location) => acc + location.remaining, 0);
+    const totalVariantQuantity = trackedVariants.reduce(
+      (acc, variant) => acc + inventoryUtils.coerceNonNegativeNumber(variant.inventoryQuantity ?? 0),
+      0
+    );
+
+    if (totalLocationQuantity !== totalVariantQuantity) {
+      warnings.push(
+        `Variant inventory total (${totalVariantQuantity}) did not match location total (${totalLocationQuantity}). Shopify inventory was synced from variant totals to the primary location.`
+      );
+      return new Map<string, Array<{ locationId: string; quantity: number }>>();
+    }
+
+    const allocations = new Map<string, Array<{ locationId: string; quantity: number }>>();
+    const remainingLocations = locationTargets.map((location) => ({ ...location }));
+
+    trackedVariants.forEach((variant, variantIndex) => {
+      const variantTotal = inventoryUtils.coerceNonNegativeNumber(variant.inventoryQuantity ?? 0);
+      const perLocation: Array<{ locationId: string; quantity: number }> = [];
+
+      if (variantIndex === trackedVariants.length - 1) {
+        for (const location of remainingLocations) {
+          perLocation.push({ locationId: location.locationId, quantity: location.remaining });
+          location.remaining = 0;
+        }
+        allocations.set(variant.title, perLocation);
+        return;
+      }
+
+      const remainingPool = remainingLocations.reduce((acc, location) => acc + location.remaining, 0);
+      let assigned = 0;
+      const provisional = remainingLocations.map((location) => {
+        if (remainingPool === 0 || variantTotal === 0) {
+          return { locationId: location.locationId, quantity: 0, remainder: 0 };
+        }
+
+        const exact = (variantTotal * location.remaining) / remainingPool;
+        const quantity = Math.min(location.remaining, Math.floor(exact));
+        assigned += quantity;
+        return {
+          locationId: location.locationId,
+          quantity,
+          remainder: exact - Math.floor(exact)
+        };
+      });
+
+      let remainderToAssign = variantTotal - assigned;
+      const byRemainder = [...provisional].sort((a, b) => b.remainder - a.remainder);
+      for (const item of byRemainder) {
+        if (remainderToAssign <= 0) {
+          break;
+        }
+
+        const location = remainingLocations.find((entry) => entry.locationId === item.locationId);
+        if (!location) {
+          continue;
+        }
+
+        const headroom = location.remaining - item.quantity;
+        if (headroom <= 0) {
+          continue;
+        }
+
+        const increment = Math.min(headroom, remainderToAssign);
+        item.quantity += increment;
+        remainderToAssign -= increment;
+      }
+
+      for (const item of provisional) {
+        const location = remainingLocations.find((entry) => entry.locationId === item.locationId);
+        if (!location) {
+          continue;
+        }
+        location.remaining -= item.quantity;
+        perLocation.push({ locationId: item.locationId, quantity: item.quantity });
+      }
+
+      allocations.set(variant.title, perLocation);
+    });
+
+    return allocations;
+  };
+
+  const variantLocationAllocations = buildVariantLocationAllocations();
+
+  for (const variant of payload.variants) {
+    const shouldTrackInventory =
+      typeof variant.trackInventory === 'boolean'
+        ? variant.trackInventory
+        : payload.inventoryTracked ?? true;
+    if (!shouldTrackInventory) {
+      continue;
+    }
+
+    const productVariant = variants.find((entry) => entry.title === variant.title);
+    const inventoryItemId = productVariant?.inventoryItem?.id;
+    if (!productVariant?.id || !inventoryItemId) {
+      warnings.push(`Shopify variant "${variant.title}" could not be matched after sync.`);
+      continue;
+    }
+
+    const exactAllocations = variantLocationAllocations.get(variant.title);
+    if (exactAllocations?.length) {
+      for (const allocation of exactAllocations) {
+        try {
+          await ensureShopifyInventoryActivated(userId, inventoryItemId, allocation.locationId);
+          await shopifyService.updateInventoryQuantity(userId, inventoryItemId, {
+            locationId: allocation.locationId,
+            quantity: allocation.quantity
+          });
+        } catch (error) {
+          warnings.push(
+            `Inventory for variant "${variant.title}" was not synced exactly across locations: ${error instanceof Error ? error.message : 'Unknown error'}`
+          );
+        }
+      }
+      continue;
+    }
+
+    if (matchedLocations.length) {
+      const primaryMatchedLocation = matchedLocations[0]!;
+      try {
+        await ensureShopifyInventoryActivated(userId, inventoryItemId, primaryMatchedLocation.matched!.id);
+        await shopifyService.updateInventoryQuantity(userId, inventoryItemId, {
+          locationId: primaryMatchedLocation.matched!.id,
+          quantity: inventoryUtils.coerceNonNegativeNumber(variant.inventoryQuantity ?? 0)
+        });
+      } catch (error) {
+        warnings.push(
+          `Inventory for variant "${variant.title}" at "${primaryMatchedLocation.requested.name}" was not synced: ${error instanceof Error ? error.message : 'Unknown error'}`
+        );
+      }
+
+      for (const location of resolvedLocations) {
+        if (location.matched) {
+          continue;
+        }
+        warnings.push(`Shopify location "${location.requested.name}" was not found, so it could not receive inventory.`);
+      }
+      continue;
+    }
+
+    const fallbackLocation = await getPrimaryShopifyLocation(userId);
+    if (!fallbackLocation) {
+      warnings.push(`No Shopify location was available to sync inventory for variant "${variant.title}".`);
+      continue;
+    }
+
+    try {
+      await ensureShopifyInventoryActivated(userId, inventoryItemId, fallbackLocation.id);
+      await shopifyService.updateInventoryQuantity(userId, inventoryItemId, {
+        locationId: fallbackLocation.id,
+        quantity: inventoryUtils.coerceNonNegativeNumber(variant.inventoryQuantity ?? 0)
+      });
+    } catch (error) {
+      warnings.push(
+        `Inventory for variant "${variant.title}" was not synced to "${fallbackLocation.name}": ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+};
+
+const syncShopifyVariants = async ({
+  userId,
+  productId,
+  payload,
+  warnings
+}: {
+  userId: string;
+  productId: string;
+  payload: ShopifyProductMutationPayload;
+  warnings: string[];
+}) => {
+  const desiredVariants = payload.variants;
+  if (!desiredVariants.length) {
+    return fetchShopifyProductById(userId, productId);
+  }
+
+  const currentProduct = await fetchShopifyProductById(userId, productId);
+  const currentVariants = currentProduct.variants?.nodes ?? [];
+  const currentByTitle = new Map(currentVariants.map((variant) => [variant.title, variant]));
+  const desiredTitles = new Set(desiredVariants.map((variant) => variant.title));
+
+  const variantsToUpdate = desiredVariants
+    .map((variant) => {
+      const existing = currentByTitle.get(variant.title);
+      if (!existing?.id) {
+        return null;
+      }
+
+      return {
+        id: existing.id,
+        ...buildShopifyVariantBulkInput({
+          payload,
+          variant,
+          includeOptionValues: Boolean(payload.options?.length)
+        })
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+
+  if (variantsToUpdate.length) {
+    const { data } = await executeShopifyRequest<{
+      productVariantsBulkUpdate: {
+        productVariants: Array<{ id: string }>;
+        userErrors: Array<{ message: string }>;
+      };
+    }>(
+      userId,
+      `
+        mutation BulkUpdateProductVariants($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+          productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+            productVariants { id }
+            userErrors { message }
+          }
+        }
+      `,
+      {
+        productId,
+        variants: variantsToUpdate
+      }
+    );
+
+    if (data.productVariantsBulkUpdate.userErrors.length) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        data.productVariantsBulkUpdate.userErrors[0]?.message ?? 'Shopify variant update failed'
+      );
+    }
+  }
+
+  const variantsToCreate = desiredVariants.filter((variant) => !currentByTitle.has(variant.title));
+  if (variantsToCreate.length) {
+    const inventoryLocations = await resolveShopifyLocationsByName(userId, payload.stockLocations);
+    const fallbackLocation = await getPrimaryShopifyLocation(userId);
+    const createInputs = variantsToCreate.map((variant) => {
+      const inventoryQuantities = inventoryLocations.length
+        ? inventoryLocations
+            .filter((entry) => Boolean(entry.matched))
+            .map((entry) => ({
+              locationId: entry.matched!.id,
+              availableQuantity: inventoryUtils.coerceNonNegativeNumber(entry.requested.available)
+            }))
+        : fallbackLocation
+          ? [{
+              locationId: fallbackLocation.id,
+              availableQuantity: inventoryUtils.coerceNonNegativeNumber(variant.inventoryQuantity ?? 0)
+            }]
+          : undefined;
+
+      return buildShopifyVariantBulkInput({
+        payload,
+        variant,
+        includeOptionValues: Boolean(payload.options?.length),
+        inventoryQuantities
+      });
+    });
+
+    const { data } = await executeShopifyRequest<{
+      productVariantsBulkCreate: {
+        productVariants: Array<{ id: string }>;
+        userErrors: Array<{ message: string }>;
+      };
+    }>(
+      userId,
+      `
+        mutation BulkCreateProductVariants($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+          productVariantsBulkCreate(productId: $productId, variants: $variants, strategy: REMOVE_STANDALONE_VARIANT) {
+            productVariants { id }
+            userErrors { message }
+          }
+        }
+      `,
+      {
+        productId,
+        variants: createInputs
+      }
+    );
+
+    if (data.productVariantsBulkCreate.userErrors.length) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        data.productVariantsBulkCreate.userErrors[0]?.message ?? 'Shopify variant creation failed'
+      );
+    }
+  }
+
+  const variantsToDelete = currentVariants
+    .filter((variant) => !desiredTitles.has(variant.title))
+    .map((variant) => variant.id);
+
+  if (variantsToDelete.length) {
+    const { data } = await executeShopifyRequest<{
+      productVariantsBulkDelete: {
+        product: { id: string } | null;
+        userErrors: Array<{ message: string }>;
+      };
+    }>(
+      userId,
+      `
+        mutation BulkDeleteProductVariants($productId: ID!, $variantsIds: [ID!]!) {
+          productVariantsBulkDelete(productId: $productId, variantsIds: $variantsIds) {
+            product { id }
+            userErrors { message }
+          }
+        }
+      `,
+      {
+        productId,
+        variantsIds: variantsToDelete
+      }
+    );
+
+    if (data.productVariantsBulkDelete.userErrors.length) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        data.productVariantsBulkDelete.userErrors[0]?.message ?? 'Shopify variant deletion failed'
+      );
+    }
+  }
+
+  let syncedProduct = await fetchShopifyProductById(userId, productId);
+  await syncShopifyVariantInventory({ userId, product: syncedProduct, payload, warnings });
+  syncedProduct = await fetchShopifyProductById(userId, productId);
+  return syncedProduct;
+};
+
 const getStoredShopifyScopes = async (userId: string) => {
   const connection = await marketplaceConnectionService.getShopifyConnection(userId);
   if (!connection?.scopes?.length) {
@@ -1567,47 +2458,18 @@ export const shopifyService = {
   },
 
   async createProduct(userId: string, payload: ShopifyProductMutationPayload): Promise<ShopifyProductMutationResult> {
-    const primaryVariant = payload.variants[0];
     const warnings: string[] = [];
-    const categoryId = await resolveShopifyCategoryId(userId, payload.category);
-    if (payload.category && !categoryId) {
-      warnings.push(`Shopify category could not be matched for "${payload.category}".`);
-    }
-    const { data } = await executeShopifyRequest<{
-      productCreate: { product: ShopifyProductNode; userErrors: Array<{ message: string }> };
-    }>(userId,
-      `
-      mutation CreateProduct($product: ProductCreateInput!) {
-        productCreate(product: $product) {
-          product {
-            ${productSelection}
-          }
-          userErrors { message }
-        }
-      }
-    `,
-      {
-        product: {
-          title: payload.title,
-          descriptionHtml: payload.description,
-          vendor: payload.vendor,
-          productType: payload.productType,
-          category: categoryId ?? undefined,
-          status: payload.status,
-          tags: payload.tags ?? []
-        }
-      });
-
-    if (data.productCreate.userErrors.length) {
-      throw new ApiError(httpStatus.BAD_REQUEST, data.productCreate.userErrors[0]?.message ?? 'Shopify product creation failed');
-    }
-
-    await syncPrimaryVariantDetails(userId, data.productCreate.product, primaryVariant, warnings);
-
-    let finalProduct = await fetchShopifyProductById(userId, data.productCreate.product.id);
+    let finalProduct = await syncProductSetToShopify({
+      userId,
+      payload,
+      warnings
+    });
+    await syncShopifyVariantInventory({ userId, product: finalProduct, payload, warnings });
+    finalProduct = await fetchShopifyProductById(userId, finalProduct.id);
     const imageSyncResult = await syncShopifyProductImage(userId, finalProduct, payload.imagePath, payload.title, warnings);
     finalProduct = imageSyncResult.product;
-    const publishedToOnlineStore = payload.publishToOnlineStore
+    const shouldPublishToOnlineStore = payload.status === 'ACTIVE' && payload.publishToOnlineStore === true;
+    const publishedToOnlineStore = shouldPublishToOnlineStore
       ? await syncShopifyPublicationState(userId, finalProduct.id, true, warnings)
       : false;
     const { mapped, localProduct } = await upsertLocalShopifyProduct(userId, finalProduct);
@@ -1639,63 +2501,56 @@ export const shopifyService = {
 
   async updateProduct(userId: string, shopifyProductId: string, payload: Partial<ShopifyProductMutationPayload>): Promise<ShopifyProductMutationResult> {
     const warnings: string[] = [];
-    const categoryId = await resolveShopifyCategoryId(userId, payload.category);
-    if (payload.category && !categoryId) {
-      warnings.push(`Shopify category could not be matched for "${payload.category}".`);
-    }
-    const { data } = await executeShopifyRequest<{
-      productUpdate: { product: ShopifyProductNode; userErrors: Array<{ message: string }> };
-    }>(userId,
-      `
-      mutation UpdateProduct($product: ProductUpdateInput!) {
-        productUpdate(product: $product) {
-          product {
-            id
-            title
-            descriptionHtml
-            handle
-            vendor
-            productType
-            status
-            tags
-            totalInventory
-            featuredImage { url }
-            variants(first: 20) {
-              nodes {
-                id
-                title
-                sku
-                price
-                compareAtPrice
-                inventoryQuantity
-                inventoryItem { id }
-              }
-            }
-          }
-          userErrors { message }
-        }
-      }
-      `,
-      {
-        product: {
-          id: shopifyProductId,
-          title: payload.title,
-          descriptionHtml: payload.description,
-          vendor: payload.vendor,
-          productType: payload.productType,
-          category: categoryId ?? undefined,
-          status: payload.status,
-          tags: payload.tags
-        }
-      });
+    const currentProduct = await fetchShopifyProductById(userId, shopifyProductId);
+    const mergedPayload: ShopifyProductMutationPayload = {
+      title: payload.title ?? currentProduct.title,
+      description: payload.description ?? currentProduct.descriptionHtml,
+      vendor: payload.vendor ?? currentProduct.vendor,
+      productType: payload.productType ?? currentProduct.productType,
+      category: payload.category,
+      handle: payload.handle ?? currentProduct.handle,
+      status: payload.status ?? currentProduct.status,
+      tags: payload.tags ?? currentProduct.tags ?? [],
+      imagePath: payload.imagePath,
+      publishToOnlineStore: payload.publishToOnlineStore,
+      compareAtPrice: payload.compareAtPrice,
+      costPerItem: payload.costPerItem,
+      chargeTax: payload.chargeTax,
+      barcode: payload.barcode,
+      inventoryTracked: payload.inventoryTracked,
+      continueSellingOutOfStock: payload.continueSellingOutOfStock,
+      stockLocations: payload.stockLocations,
+      physicalProduct: payload.physicalProduct,
+      weight: payload.weight,
+      weightUnit: payload.weightUnit,
+      countryOfOrigin: payload.countryOfOrigin,
+      hsCode: payload.hsCode,
+      collections: payload.collections,
+      themeTemplate: payload.themeTemplate,
+      seoTitle: payload.seoTitle,
+      seoDescription: payload.seoDescription,
+      seoHandle: payload.seoHandle,
+      metafields: payload.metafields,
+      options: payload.options,
+      variants: payload.variants ?? (currentProduct.variants?.nodes ?? []).map((variant) => ({
+        title: variant.title,
+        price: variant.price ?? '0',
+        sku: variant.sku,
+        inventoryQuantity: variant.inventoryQuantity ?? 0,
+        trackInventory: variant.inventoryItem?.tracked ?? true,
+        barcode: variant.barcode,
+        compareAtPrice: variant.compareAtPrice
+      }))
+    };
 
-    if (data.productUpdate.userErrors.length) {
-      throw new ApiError(httpStatus.BAD_REQUEST, data.productUpdate.userErrors[0]?.message ?? 'Shopify product update failed');
-    }
-
-    await syncPrimaryVariantDetails(userId, data.productUpdate.product, payload.variants?.[0], warnings);
-
-    let finalProduct = await fetchShopifyProductById(userId, shopifyProductId);
+    let finalProduct = await syncProductSetToShopify({
+      userId,
+      identifier: { id: shopifyProductId },
+      payload: mergedPayload,
+      warnings
+    });
+    await syncShopifyVariantInventory({ userId, product: finalProduct, payload: mergedPayload, warnings });
+    finalProduct = await fetchShopifyProductById(userId, finalProduct.id);
     const imageSyncResult = await syncShopifyProductImage(
       userId,
       finalProduct,
@@ -1707,7 +2562,12 @@ export const shopifyService = {
 
     const publishedToOnlineStore =
       typeof payload.publishToOnlineStore === 'boolean'
-        ? await syncShopifyPublicationState(userId, shopifyProductId, payload.publishToOnlineStore, warnings)
+        ? await syncShopifyPublicationState(
+            userId,
+            shopifyProductId,
+            payload.status === 'ACTIVE' && payload.publishToOnlineStore,
+            warnings
+          )
         : false;
 
     const { localProduct } = await upsertLocalShopifyProduct(userId, finalProduct);
