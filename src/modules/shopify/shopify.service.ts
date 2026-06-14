@@ -232,6 +232,7 @@ const SHOPIFY_SCOPES = [
   'read_locations',
   'read_orders',
   'write_orders',
+  'read_shopify_payments_disputes',
   'read_products',
   'write_products',
   'read_publications',
@@ -243,6 +244,8 @@ const SHOPIFY_DISPUTE_SCOPE_HINTS = [
   'read_shopify_payments',
   'read_shopify_payments_payouts'
 ];
+
+const REQUIRED_SHOPIFY_DISPUTE_SCOPE = 'read_shopify_payments_disputes';
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -398,7 +401,10 @@ const fulfillmentOrdersQuery = `
 
 const shopifyPaymentsDisputesQuery = `
   query GetShopifyPaymentsDisputes {
-    shopifyPaymentsDisputes(first: 50) {
+    # Shopify Admin GraphQL 2026-04 documents the top-level disputes query for
+    # Shopify Payments disputes, so we use the documented field instead of the
+    # older shopifyPaymentsDisputes connection name.
+    disputes(first: 50) {
       nodes {
         id
         status
@@ -426,6 +432,39 @@ const shopifyPaymentsDisputesQuery = `
     }
   }
 `;
+
+type ShopifyDisputeImportResult =
+  | {
+      success: false;
+      reason: 'missing_scope';
+      requiredScope: typeof REQUIRED_SHOPIFY_DISPUTE_SCOPE;
+      count: 0;
+      message: string;
+    }
+  | {
+      success: false;
+      reason: 'shopify_api_error';
+      count: 0;
+      message: string;
+      details: {
+        provider: 'shopify';
+        operation: 'disputes';
+        statusCode?: number;
+        errorMessage?: string;
+      };
+    }
+  | {
+      success: true;
+      reason: 'no_disputes';
+      count: 0;
+      message: string;
+    }
+  | {
+      success: true;
+      reason: 'imported';
+      count: number;
+      message: string;
+    };
 
 const getSingleQueryValue = (value: unknown): string => {
   if (Array.isArray(value)) {
@@ -1965,6 +2004,30 @@ const hasDisputeScopeHints = (scopes: Set<string> | null) => {
   return SHOPIFY_DISPUTE_SCOPE_HINTS.some((scope) => scopes.has(scope));
 };
 
+const getSafeShopifyDisputeErrorDetails = (error: unknown) => {
+  if (error instanceof ApiError) {
+    return {
+      provider: 'shopify' as const,
+      operation: 'disputes' as const,
+      statusCode: error.statusCode,
+      errorMessage: error.message
+    };
+  }
+
+  if (error instanceof Error) {
+    return {
+      provider: 'shopify' as const,
+      operation: 'disputes' as const,
+      errorMessage: error.message
+    };
+  }
+
+  return {
+    provider: 'shopify' as const,
+    operation: 'disputes' as const
+  };
+};
+
 const normalizeDisputeStatus = (value: unknown) => {
   const normalized = String(value ?? '').trim().toUpperCase();
   if (normalized.includes('OPEN')) {
@@ -2841,22 +2904,25 @@ export const shopifyService = {
     return { count: orders.length };
   },
 
-  async importDisputes(userId: string) {
+  async importDisputes(userId: string): Promise<ShopifyDisputeImportResult> {
     const storedScopes = await getStoredShopifyScopes(userId);
     if (!hasDisputeScopeHints(storedScopes)) {
       return {
+        success: false,
+        reason: 'missing_scope',
+        requiredScope: REQUIRED_SHOPIFY_DISPUTE_SCOPE,
         count: 0,
-        warning: 'No Shopify dispute data available with current API/scopes.'
+        message: 'Reconnect Shopify with dispute permissions.'
       };
     }
 
     try {
-      const { data } = await executeShopifyRequest<{ shopifyPaymentsDisputes?: { nodes?: ShopifyPaymentsDisputeNode[] } }>(
+      const { data } = await executeShopifyRequest<{ disputes?: { nodes?: ShopifyPaymentsDisputeNode[] } }>(
         userId,
         shopifyPaymentsDisputesQuery
       );
 
-      const disputes = data.shopifyPaymentsDisputes?.nodes ?? [];
+      const disputes = data.disputes?.nodes ?? [];
       let count = 0;
 
       for (const dispute of disputes) {
@@ -2882,22 +2948,37 @@ export const shopifyService = {
         message: `Imported ${count} Shopify disputes`
       });
 
+      if (count === 0) {
+        return {
+          success: true,
+          reason: 'no_disputes',
+          count: 0,
+          message: 'No Shopify disputes found.'
+        };
+      }
+
       return {
+        success: true,
+        reason: 'imported',
         count,
-        warning: count === 0 ? 'No Shopify dispute data available with current API/scopes.' : undefined
+        message: 'Shopify disputes imported successfully.'
       };
     } catch (error) {
+      const safeDetails = getSafeShopifyDisputeErrorDetails(error);
       logger.warn(
         {
           userId,
-          message: error instanceof Error ? error.message : 'Unknown Shopify dispute import failure'
+          ...safeDetails
         },
-        'Shopify disputes import fell back to empty result'
+        'Shopify disputes import failed'
       );
 
       return {
+        success: false,
+        reason: 'shopify_api_error',
         count: 0,
-        warning: 'No Shopify dispute data available with current API/scopes.'
+        message: error instanceof ApiError ? error.message : 'Shopify disputes import failed.',
+        details: safeDetails
       };
     }
   },
