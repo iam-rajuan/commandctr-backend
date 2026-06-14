@@ -137,6 +137,14 @@ type ShopifyShipmentPayload = {
   notifyCustomer?: boolean;
 };
 
+type ShopifyOrderCancellationPayload = {
+  notifyCustomer?: boolean;
+  reason: 'CUSTOMER' | 'DECLINED' | 'FRAUD' | 'INVENTORY' | 'STAFF' | 'OTHER';
+  restock: boolean;
+  refund: boolean;
+  staffNote?: string;
+};
+
 type ShopifyOAuthAccessTokenResponse = {
   access_token?: string;
   scope?: string;
@@ -2825,15 +2833,15 @@ export const shopifyService = {
     }));
 
     const { data } = await executeShopifyRequest<{
-      fulfillmentCreateV2: {
+      fulfillmentCreate: {
         fulfillment: { id: string; status?: string } | null;
         userErrors: Array<{ message: string }>;
       };
     }>(
       userId,
       `
-        mutation CreateFulfillment($fulfillment: FulfillmentV2Input!) {
-          fulfillmentCreateV2(fulfillment: $fulfillment) {
+        mutation CreateFulfillment($fulfillment: FulfillmentInput!) {
+          fulfillmentCreate(fulfillment: $fulfillment) {
             fulfillment {
               id
               status
@@ -2855,10 +2863,10 @@ export const shopifyService = {
       }
     );
 
-    if (data.fulfillmentCreateV2.userErrors.length) {
+    if (data.fulfillmentCreate.userErrors.length) {
       throw new ApiError(
         httpStatus.BAD_REQUEST,
-        data.fulfillmentCreateV2.userErrors[0]?.message ?? 'Shopify fulfillment creation failed'
+        data.fulfillmentCreate.userErrors[0]?.message ?? 'Shopify fulfillment creation failed'
       );
     }
 
@@ -2872,7 +2880,76 @@ export const shopifyService = {
       message: 'Marked Shopify order as shipped successfully'
     });
 
-    return data.fulfillmentCreateV2.fulfillment;
+    return data.fulfillmentCreate.fulfillment;
+  },
+
+  async cancelOrder(userId: string, shopifyOrderId: string, payload: ShopifyOrderCancellationPayload) {
+    const { data } = await executeShopifyRequest<{
+      orderCancel: {
+        job: { id: string } | null;
+        orderCancelUserErrors: Array<{ message: string }>;
+        userErrors: Array<{ message: string }>;
+      };
+    }>(
+      userId,
+      `
+        mutation CancelOrder(
+          $orderId: ID!
+          $notifyCustomer: Boolean
+          $reason: OrderCancelReason!
+          $restock: Boolean!
+          $refundMethod: OrderCancelRefundMethodInput
+          $staffNote: String
+        ) {
+          orderCancel(
+            orderId: $orderId
+            notifyCustomer: $notifyCustomer
+            reason: $reason
+            restock: $restock
+            refundMethod: $refundMethod
+            staffNote: $staffNote
+          ) {
+            job {
+              id
+            }
+            orderCancelUserErrors {
+              message
+            }
+            userErrors {
+              message
+            }
+          }
+        }
+      `,
+      {
+        orderId: shopifyOrderId,
+        notifyCustomer: payload.notifyCustomer ?? false,
+        reason: payload.reason,
+        restock: payload.restock,
+        refundMethod: payload.refund ? { originalPaymentMethodsRefund: true } : undefined,
+        staffNote: payload.staffNote
+      }
+    );
+
+    const userError =
+      data.orderCancel.orderCancelUserErrors[0]?.message ??
+      data.orderCancel.userErrors[0]?.message;
+
+    if (userError) {
+      throw new ApiError(httpStatus.BAD_REQUEST, userError);
+    }
+
+    await marketplaceConnectionService.markShopifySynced(userId);
+    await syncLogService.create({
+      userId,
+      entityType: 'order',
+      entityId: shopifyOrderId,
+      action: 'cancel-order',
+      status: 'success',
+      message: 'Cancelled Shopify order successfully'
+    });
+
+    return data.orderCancel.job;
   },
 
   async getOrders(userId: string) {

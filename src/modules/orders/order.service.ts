@@ -1,6 +1,7 @@
 import { httpStatus } from '@/constants/http.constant';
 import { logger } from '@/config/logger';
 import { ApiError } from '@/shared/api-error';
+import { ProductModel } from '@/modules/products/product.model';
 
 import { OrderModel } from './order.model';
 
@@ -22,6 +23,10 @@ type UpdateOrderStatusPayload = {
   trackingUrl?: string;
   labelUrl?: string;
   notifyCustomer?: boolean;
+  cancelReason?: 'CUSTOMER' | 'DECLINED' | 'FRAUD' | 'INVENTORY' | 'STAFF' | 'OTHER';
+  restock?: boolean;
+  refund?: boolean;
+  staffNote?: string;
 };
 
 const parsePositiveInt = (value: string | undefined, fallback: number) => {
@@ -86,6 +91,37 @@ const addComputedStatus = <T extends Record<string, unknown>>(order: T) => ({
   ...order,
   status: getOrderStatus(order)
 });
+
+const hydrateOrderLineItemImages = async <T extends Record<string, any>>(userId: string, order: T): Promise<T> => {
+  const lineItems = Array.isArray(order.lineItems) ? order.lineItems : [];
+  const productIds = [...new Set(lineItems.map((item) => item.shopifyProductId).filter((value): value is string => typeof value === 'string' && Boolean(value)))];
+
+  if (!productIds.length) {
+    return order;
+  }
+
+  const products = await ProductModel.find(
+    { userId, shopifyProductId: { $in: productIds } },
+    { shopifyProductId: 1, featuredImage: 1, variants: 1 }
+  ).lean();
+
+  const productById = new Map(products.map((product) => [product.shopifyProductId, product]));
+
+  return {
+    ...order,
+    lineItems: lineItems.map((item) => {
+      const product = typeof item.shopifyProductId === 'string' ? productById.get(item.shopifyProductId) : undefined;
+
+      return {
+        ...item,
+        imageUrl:
+          (typeof item.imageUrl === 'string' && item.imageUrl) ||
+          (typeof product?.featuredImage === 'string' ? product.featuredImage : '') ||
+          ''
+      };
+    })
+  };
+};
 
 const escapeCsvValue = (value: unknown) => `"${String(value ?? '').replaceAll('"', '""')}"`;
 
@@ -376,7 +412,12 @@ export const orderService = {
       ? orders.filter((order) => getOrderStatus(order) === query.status)
       : orders;
     const total = filteredOrders.length;
-    const items = filteredOrders.slice((page - 1) * limit, page * limit).map(addComputedStatus);
+    const items = await Promise.all(
+      filteredOrders
+        .slice((page - 1) * limit, page * limit)
+        .map(addComputedStatus)
+        .map((order) => hydrateOrderLineItemImages(userId, order))
+    );
 
     return {
       items,
@@ -422,7 +463,7 @@ export const orderService = {
       throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
     }
 
-    return addComputedStatus(order);
+    return hydrateOrderLineItemImages(userId, addComputedStatus(order));
   },
 
   async addNote(userId: string, orderId: string, message: string) {
@@ -443,7 +484,7 @@ export const orderService = {
       throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
     }
 
-    return addComputedStatus(order);
+    return hydrateOrderLineItemImages(userId, addComputedStatus(order));
   },
 
   async updateOrderStatus(userId: string, orderId: string, payload: UpdateOrderStatusPayload) {
@@ -471,6 +512,18 @@ export const orderService = {
       updates.cancelledAt = new Date();
     }
 
+    if (payload.status === 'Cancelled' && existingOrder.marketplace === 'shopify' && existingOrder.shopifyOrderId) {
+      const { shopifyService } = await import('@/modules/shopify/shopify.service');
+      await shopifyService.cancelOrder(userId, existingOrder.shopifyOrderId, {
+        notifyCustomer: payload.notifyCustomer ?? false,
+        reason: payload.cancelReason ?? 'OTHER',
+        restock: payload.restock ?? true,
+        refund: payload.refund ?? true,
+        staffNote: payload.staffNote
+      });
+      updates.fulfillmentStatus = 'CANCELLED';
+    }
+
     if (
       payload.status === 'Shipped' &&
       existingOrder.marketplace === 'shopify' &&
@@ -491,7 +544,7 @@ export const orderService = {
       throw new ApiError(httpStatus.NOT_FOUND, 'Order not found');
     }
 
-    return addComputedStatus(order);
+    return hydrateOrderLineItemImages(userId, addComputedStatus(order));
   },
 
   async exportOrdersCsv(userId: string, query: OrderQuery = {}) {

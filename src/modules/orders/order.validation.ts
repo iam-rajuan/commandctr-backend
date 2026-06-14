@@ -20,7 +20,11 @@ export const orderValidation = {
       trackingNumber: z.string().trim().optional(),
       trackingUrl: z.string().trim().url().optional(),
       labelUrl: z.string().trim().url().optional(),
-      notifyCustomer: z.boolean().optional()
+      notifyCustomer: z.boolean().optional(),
+      cancelReason: z.enum(['CUSTOMER', 'DECLINED', 'FRAUD', 'INVENTORY', 'STAFF', 'OTHER']).optional(),
+      restock: z.boolean().optional(),
+      refund: z.boolean().optional(),
+      staffNote: z.string().trim().max(255).optional()
     })
   }),
   addNote: z.object({
