@@ -116,12 +116,15 @@ type ShopifyMoneyV2 = {
 type ShopifyPaymentsDisputeNode = {
   id?: string;
   status?: string;
-  reason?: string;
   amount?: ShopifyMoneyV2;
   initiatedAt?: string;
-  updatedAt?: string;
-  dueAt?: string;
-  evidence?: { status?: string };
+  finalizedOn?: string;
+  evidenceDueBy?: string;
+  reasonDetails?: {
+    reason?: string;
+    networkReasonCode?: string;
+  };
+  type?: string;
   order?: {
     id?: string;
     name?: string;
@@ -409,19 +412,17 @@ const fulfillmentOrdersQuery = `
 
 const shopifyPaymentsDisputesQuery = `
   query GetShopifyPaymentsDisputes {
-    # Shopify Admin GraphQL 2026-04 documents the top-level disputes query for
-    # Shopify Payments disputes, so we use the documented field instead of the
-    # older shopifyPaymentsDisputes connection name.
     disputes(first: 50) {
       nodes {
         id
         status
-        reason
         initiatedAt
-        updatedAt
-        dueAt
-        evidence {
-          status
+        finalizedOn
+        evidenceDueBy
+        type
+        reasonDetails {
+          reason
+          networkReasonCode
         }
         amount {
           amount
@@ -2038,16 +2039,16 @@ const getSafeShopifyDisputeErrorDetails = (error: unknown) => {
 
 const normalizeDisputeStatus = (value: unknown) => {
   const normalized = String(value ?? '').trim().toUpperCase();
-  if (normalized.includes('OPEN')) {
+  if (normalized === 'NEEDS_RESPONSE' || normalized.includes('OPEN')) {
     return 'OPEN';
   }
-  if (normalized.includes('SUBMITTED')) {
+  if (normalized === 'UNDER_REVIEW' || normalized.includes('SUBMITTED')) {
     return 'SUBMITTED';
   }
   if (normalized.includes('WON')) {
     return 'WON';
   }
-  if (normalized.includes('LOST')) {
+  if (normalized === 'ACCEPTED' || normalized === 'CHARGE_REFUNDED' || normalized === 'PREVENTED' || normalized.includes('LOST')) {
     return 'LOST';
   }
 
@@ -2073,13 +2074,13 @@ const mapShopifyDisputeToLocalDispute = async (userId: string, dispute: ShopifyP
     customerEmail: dispute.order?.email ?? relatedOrder?.email ?? '',
     disputeId: dispute.id ?? '',
     status: normalizeDisputeStatus(dispute.status),
-    reason: dispute.reason?.trim() || 'Unknown dispute reason',
+    reason: dispute.reasonDetails?.reason?.trim() || dispute.reasonDetails?.networkReasonCode?.trim() || dispute.type?.trim() || 'Unknown dispute reason',
     amount: dispute.amount?.amount?.trim() || undefined,
     currency: dispute.amount?.currencyCode?.trim() || relatedOrder?.currency || undefined,
-    deadline: dispute.dueAt ? new Date(dispute.dueAt) : undefined,
-    evidenceStatus: dispute.evidence?.status?.trim() || undefined,
+    deadline: dispute.evidenceDueBy ? new Date(dispute.evidenceDueBy) : undefined,
+    evidenceStatus: undefined,
     sourceCreatedAt: dispute.initiatedAt ? new Date(dispute.initiatedAt) : undefined,
-    sourceUpdatedAt: dispute.updatedAt ? new Date(dispute.updatedAt) : undefined,
+    sourceUpdatedAt: (dispute.finalizedOn ?? dispute.initiatedAt) ? new Date(dispute.finalizedOn ?? dispute.initiatedAt ?? '') : undefined,
     rawShopifyData: dispute,
     lastSyncedAt: new Date()
   };
