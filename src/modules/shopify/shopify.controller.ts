@@ -13,6 +13,9 @@ const getParam = (value: unknown): string => {
   return typeof value === 'string' ? value : '';
 };
 
+const getRouteIdentifier = (params: Record<string, unknown>, query: Record<string, unknown>, paramName: string) =>
+  getParam(params[paramName]) || getParam(params[0]) || getParam(query[paramName]) || getParam(query.id);
+
 export const shopifyController = {
   connect: asyncHandler(async (req, res) => {
     const url = await shopifyService.createShopifyConnectUrl(req.user!.userId);
@@ -58,12 +61,12 @@ export const shopifyController = {
     res.status(httpStatus.CREATED).json(ApiResponse.success('Shopify product created successfully', result));
   }),
   updateProduct: asyncHandler(async (req, res) => {
-    const shopifyProductId = getParam(req.params.shopifyProductId) || getParam(req.query.shopifyProductId) || getParam(req.query.id);
+    const shopifyProductId = getRouteIdentifier(req.params, req.query, 'shopifyProductId');
     const result = await shopifyService.updateProduct(req.user!.userId, shopifyProductId, req.body);
     res.status(httpStatus.OK).json(ApiResponse.success('Shopify product updated successfully', result));
   }),
   updatePrice: asyncHandler(async (req, res) => {
-    const shopifyProductId = getParam(req.params.shopifyProductId) || getParam(req.query.shopifyProductId) || getParam(req.query.id);
+    const shopifyProductId = getRouteIdentifier(req.params, req.query, 'shopifyProductId');
     const result = await shopifyService.updateProductPrice(req.user!.userId, shopifyProductId, req.body);
     res.status(httpStatus.OK).json(ApiResponse.success('Shopify product price updated successfully', result));
   }),
@@ -88,7 +91,7 @@ export const shopifyController = {
     res.status(httpStatus.OK).json(ApiResponse.success('Shopify inventory fetched successfully', result));
   }),
   updateInventory: asyncHandler(async (req, res) => {
-    const inventoryItemId = getParam(req.params.inventoryItemId) || getParam(req.query.inventoryItemId) || getParam(req.query.id);
+    const inventoryItemId = getRouteIdentifier(req.params, req.query, 'inventoryItemId');
     const result = await shopifyService.updateInventoryQuantity(req.user!.userId, inventoryItemId, req.body);
     res.status(httpStatus.OK).json(ApiResponse.success('Shopify inventory updated successfully', result));
   })
