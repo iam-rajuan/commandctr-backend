@@ -4,6 +4,50 @@ import { ApiError } from '@/shared/api-error';
 import { IProduct, ProductVariant } from './product.interface';
 import { ProductModel } from './product.model';
 
+const ensureProductIndexes = async () => {
+  const indexes = await ProductModel.collection.indexes();
+  const shopifyProductIndex = indexes.find((index) => index.name === 'userId_1_shopifyProductId_1');
+  const ebaySkuIndex = indexes.find((index) => index.name === 'userId_1_ebaySku_1');
+  const hasStringPartialFilter = (index: { partialFilterExpression?: Record<string, unknown> } | undefined, field: string) => {
+    const partialFilter = index?.partialFilterExpression?.[field];
+    if (!partialFilter || typeof partialFilter !== 'object') {
+      return false;
+    }
+
+    return '$type' in partialFilter && (partialFilter as { $type?: unknown }).$type === 'string';
+  };
+
+  if (shopifyProductIndex && !hasStringPartialFilter(shopifyProductIndex, 'shopifyProductId')) {
+    await ProductModel.collection.dropIndex('userId_1_shopifyProductId_1');
+  }
+
+  if (ebaySkuIndex && !hasStringPartialFilter(ebaySkuIndex, 'ebaySku')) {
+    await ProductModel.collection.dropIndex('userId_1_ebaySku_1');
+  }
+
+  if (!shopifyProductIndex || !hasStringPartialFilter(shopifyProductIndex, 'shopifyProductId')) {
+    await ProductModel.collection.createIndex(
+      { userId: 1, shopifyProductId: 1 },
+      {
+        unique: true,
+        name: 'userId_1_shopifyProductId_1',
+        partialFilterExpression: { shopifyProductId: { $type: 'string' } }
+      }
+    );
+  }
+
+  if (!ebaySkuIndex || !hasStringPartialFilter(ebaySkuIndex, 'ebaySku')) {
+    await ProductModel.collection.createIndex(
+      { userId: 1, ebaySku: 1 },
+      {
+        unique: true,
+        name: 'userId_1_ebaySku_1',
+        partialFilterExpression: { ebaySku: { $type: 'string' } }
+      }
+    );
+  }
+};
+
 const normalizeVariants = (variants: ProductVariant[]) =>
   variants.map((variant, index) => ({
     ...variant,
@@ -176,18 +220,41 @@ const buildUpdateProductPayload = (payload: Partial<IProduct>) => {
 };
 
 export const productService = {
+  ensureIndexes: ensureProductIndexes,
+
   async getProducts(userId: string) {
     return ProductModel.find({ userId }).sort({ updatedAt: -1 });
   },
 
   async createProduct(userId: string, payload: Partial<IProduct>) {
+    await ensureProductIndexes();
     const productPayload = buildCreateProductPayload(payload);
-    const product = await ProductModel.create({
-      ...productPayload,
-      userId
-    });
+    try {
+      const product = await ProductModel.create({
+        ...productPayload,
+        userId
+      });
 
-    return product;
+      return product;
+    } catch (error) {
+      if (
+        typeof error === 'object' &&
+        error &&
+        'code' in error &&
+        error.code === 11000 &&
+        'keyPattern' in error &&
+        typeof error.keyPattern === 'object' &&
+        error.keyPattern &&
+        'shopifyProductId' in error.keyPattern
+      ) {
+        throw new ApiError(
+          httpStatus.CONFLICT,
+          'Product create failed because MongoDB still has a conflicting Shopify product uniqueness record. Retry once after the index repair completes.'
+        );
+      }
+
+      throw error;
+    }
   },
 
   async getProductById(userId: string, productId: string) {

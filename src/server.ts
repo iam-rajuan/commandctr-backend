@@ -5,11 +5,13 @@ import { connectDatabase } from '@/config/database';
 import { env } from '@/config/env';
 import { logger } from '@/config/logger';
 import { ebaySyncService } from '@/modules/ebay/ebay.sync.service';
+import { productService } from '@/modules/products/product.service';
 import { ensureDefaultAdmin } from '@/modules/seed/admin-seed.service';
 
 const startServer = async (): Promise<void> => {
   try {
     await connectDatabase();
+    await productService.ensureIndexes();
     await ensureDefaultAdmin();
     ebaySyncService.startWorker();
 

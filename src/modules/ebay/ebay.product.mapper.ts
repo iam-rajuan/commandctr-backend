@@ -55,7 +55,23 @@ const sanitizeHtmlDescription = (value?: string) => {
   return input.length > 5000 ? input.slice(0, 5000) : input;
 };
 
-const isPublicImageUrl = (value?: string) => Boolean(value && /^https?:\/\//i.test(value));
+const normalizePublicImageUrl = (value?: string) => {
+  const trimmed = value?.trim();
+  if (!trimmed || !/^https?:\/\//i.test(trimmed)) {
+    return undefined;
+  }
+
+  try {
+    const normalized = new URL(trimmed);
+    if (normalized.protocol !== 'http:' && normalized.protocol !== 'https:') {
+      return undefined;
+    }
+
+    return normalized.toString();
+  } catch {
+    return undefined;
+  }
+};
 
 const truncateForEbayAspect = (value: string, maxLength: number) => {
   const trimmed = value.trim();
@@ -199,7 +215,9 @@ const getQuantity = (product: ProductDocument) => {
 };
 
 const getImages = (product: ProductDocument) => {
-  const candidates = [product.featuredImage, ...(product.images ?? [])].filter(isPublicImageUrl) as string[];
+  const candidates = [product.featuredImage, ...(product.images ?? [])]
+    .map((value) => normalizePublicImageUrl(value))
+    .filter(Boolean) as string[];
   return Array.from(new Set(candidates));
 };
 

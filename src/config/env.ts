@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 import { z } from 'zod';
 
 dotenv.config();
-dotenv.config({ path: path.resolve(__dirname, '../../.env'), override: false });
+dotenv.config({ path: path.resolve(__dirname, '../../.env'), override: true });
 
 const emptyStringToUndefined = (value: unknown) => {
   if (typeof value !== 'string') {

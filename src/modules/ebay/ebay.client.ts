@@ -64,6 +64,14 @@ const normalizeEnvValue = (value?: string) => {
 
 const getEbayEnvironment = (): 'sandbox' | 'production' => env.EBAY_ENVIRONMENT ?? 'sandbox';
 
+const getDefaultMarketplaceId = (environment: 'sandbox' | 'production') => {
+  if (environment === 'sandbox') {
+    return 'EBAY_GB';
+  }
+
+  return 'EBAY_US';
+};
+
 const getMarketplaceLocale = (marketplaceId: string) => {
   const normalizedMarketplaceId = marketplaceId.trim().toUpperCase();
   const marketplaceLocales: Record<string, string> = {
@@ -162,7 +170,18 @@ export const getEbayCommerceConfig = (): EbayCommerceConfig => {
   const environment = getEbayEnvironment();
   const apiBaseUrl =
     normalizeEnvValue(env.EBAY_API_BASE_URL) ?? DEFAULT_EBAY_API_BASE_URLS[environment];
-  const marketplaceId = requireValue(normalizeEnvValue(env.EBAY_MARKETPLACE_ID), 'EBAY_MARKETPLACE_ID');
+  const marketplaceId =
+    normalizeEnvValue(env.EBAY_MARKETPLACE_ID) ?? getDefaultMarketplaceId(environment);
+
+  if (!normalizeEnvValue(env.EBAY_MARKETPLACE_ID)) {
+    logger.warn(
+      {
+        environment,
+        fallbackMarketplaceId: marketplaceId
+      },
+      'EBAY_MARKETPLACE_ID was missing, so the default marketplace fallback was used'
+    );
+  }
 
   return {
     environment,
