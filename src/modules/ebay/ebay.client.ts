@@ -17,6 +17,7 @@ export interface EbayCommerceConfig {
   environment: 'sandbox' | 'production';
   apiBaseUrl: string;
   marketplaceId: string;
+  locale: string;
   merchantLocationKey: string;
   paymentPolicyId: string;
   returnPolicyId: string;
@@ -62,6 +63,42 @@ const normalizeEnvValue = (value?: string) => {
 };
 
 const getEbayEnvironment = (): 'sandbox' | 'production' => env.EBAY_ENVIRONMENT ?? 'sandbox';
+
+const getMarketplaceLocale = (marketplaceId: string) => {
+  const normalizedMarketplaceId = marketplaceId.trim().toUpperCase();
+  const marketplaceLocales: Record<string, string> = {
+    EBAY_US: 'en-US',
+    EBAY_GB: 'en-GB',
+    EBAY_AU: 'en-AU',
+    EBAY_CA: 'en-CA',
+    EBAY_DE: 'de-DE',
+    EBAY_FR: 'fr-FR',
+    EBAY_ES: 'es-ES',
+    EBAY_IT: 'it-IT',
+    EBAY_NL: 'nl-NL',
+    EBAY_BE: 'nl-BE'
+  };
+
+  return marketplaceLocales[normalizedMarketplaceId] ?? 'en-US';
+};
+
+export const getMarketplaceCurrency = (marketplaceId: string) => {
+  const normalizedMarketplaceId = marketplaceId.trim().toUpperCase();
+  const marketplaceCurrencies: Record<string, string> = {
+    EBAY_US: 'USD',
+    EBAY_GB: 'GBP',
+    EBAY_AU: 'AUD',
+    EBAY_CA: 'CAD',
+    EBAY_DE: 'EUR',
+    EBAY_FR: 'EUR',
+    EBAY_ES: 'EUR',
+    EBAY_IT: 'EUR',
+    EBAY_NL: 'EUR',
+    EBAY_BE: 'EUR'
+  };
+
+  return marketplaceCurrencies[normalizedMarketplaceId] ?? 'USD';
+};
 
 const requireValue = (value: string | undefined, name: string) => {
   if (!value) {
@@ -125,11 +162,13 @@ export const getEbayCommerceConfig = (): EbayCommerceConfig => {
   const environment = getEbayEnvironment();
   const apiBaseUrl =
     normalizeEnvValue(env.EBAY_API_BASE_URL) ?? DEFAULT_EBAY_API_BASE_URLS[environment];
+  const marketplaceId = requireValue(normalizeEnvValue(env.EBAY_MARKETPLACE_ID), 'EBAY_MARKETPLACE_ID');
 
   return {
     environment,
     apiBaseUrl,
-    marketplaceId: requireValue(normalizeEnvValue(env.EBAY_MARKETPLACE_ID), 'EBAY_MARKETPLACE_ID'),
+    marketplaceId,
+    locale: getMarketplaceLocale(marketplaceId),
     merchantLocationKey: requireValue(
       normalizeEnvValue(env.EBAY_MERCHANT_LOCATION_KEY),
       'EBAY_MERCHANT_LOCATION_KEY'
@@ -141,7 +180,7 @@ export const getEbayCommerceConfig = (): EbayCommerceConfig => {
       'EBAY_FULFILLMENT_POLICY_ID'
     ),
     categoryId: requireValue(normalizeEnvValue(env.EBAY_DEFAULT_CATEGORY_ID), 'EBAY_DEFAULT_CATEGORY_ID'),
-    currency: normalizeEnvValue(env.EBAY_DEFAULT_CURRENCY) ?? 'USD',
+    currency: normalizeEnvValue(env.EBAY_DEFAULT_CURRENCY) ?? getMarketplaceCurrency(marketplaceId),
     listingFormat: normalizeEnvValue(env.EBAY_LISTING_FORMAT) ?? 'FIXED_PRICE',
     listingDuration: normalizeEnvValue(env.EBAY_LISTING_DURATION) ?? 'GTC',
     condition: normalizeEnvValue(env.EBAY_DEFAULT_CONDITION) ?? 'NEW'
@@ -162,13 +201,20 @@ export const ebayClient = {
     for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
       try {
         const accessToken = await ebayService.getValidEbayAccessToken(options.userId, config.environment);
+        const baseHeaders: Record<string, string> = {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
+          'Accept-Language': config.locale
+        };
+
+        if (options.body !== undefined) {
+          baseHeaders['Content-Type'] = 'application/json';
+          baseHeaders['Content-Language'] = config.locale;
+        }
+
         const response = await fetch(url, {
           method: options.method,
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            Accept: 'application/json',
-            'Content-Type': 'application/json'
-          },
+          headers: baseHeaders,
           body: options.body === undefined ? undefined : JSON.stringify(options.body)
         });
 

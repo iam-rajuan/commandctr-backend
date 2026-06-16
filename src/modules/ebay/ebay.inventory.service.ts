@@ -1,3 +1,5 @@
+import { env } from '@/config/env';
+import { logger } from '@/config/logger';
 import { ProductModel } from '@/modules/products/product.model';
 
 import { ebayClient } from './ebay.client';
@@ -12,6 +14,22 @@ export const ebayInventoryService = {
 
     const sku = ebayProductMapper.getSku(product);
     const inventoryItem = ebayProductMapper.toInventoryItem(product);
+    const normalizedCondition = ebayProductMapper.getCondition(product);
+
+    if (env.NODE_ENV === 'development') {
+      logger.info(
+        {
+          productId,
+          sku,
+          conditionInput: product.ebayCondition?.trim() || null,
+          conditionEnum: normalizedCondition.conditionEnum,
+          conditionId: normalizedCondition.conditionId,
+          inventoryItem
+        },
+        'Prepared sanitized eBay create_inventory_item payload'
+      );
+    }
+
     const result = await ebayClient.request({
       userId,
       method: 'PUT',

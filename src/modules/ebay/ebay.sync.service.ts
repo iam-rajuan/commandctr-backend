@@ -35,7 +35,7 @@ const validatePublishReadiness = async (userId: string, productId: string) => {
   const price = ebayProductMapper.getPrice(product)?.trim();
   const quantity = ebayProductMapper.getQuantity(product);
   const images = ebayProductMapper.getImages(product);
-  const condition = ebayProductMapper.getCondition(product)?.trim();
+  const condition = ebayProductMapper.getCondition(product).conditionEnum.trim();
   const listingDescription = ebayProductMapper.getListingDescription(product)?.trim();
   const categoryId = product.ebayCategoryId?.trim() || config.categoryId;
   const marketplaceId = product.ebayMarketplaceId?.trim() || config.marketplaceId;
