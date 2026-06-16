@@ -44,7 +44,13 @@ const sanitizeHtmlDescription = (value?: string) => {
   return input.length > 5000 ? input.slice(0, 5000) : input;
 };
 
+const isPublicImageUrl = (value?: string) => Boolean(value && /^https?:\/\//i.test(value));
+
 const buildAspectMap = (product: ProductDocument) => {
+  if (product.ebayItemSpecifics && Object.keys(product.ebayItemSpecifics).length > 0) {
+    return product.ebayItemSpecifics;
+  }
+
   const aspects: Record<string, string[]> = {};
 
   if (product.vendor) {
@@ -99,25 +105,45 @@ const getQuantity = (product: ProductDocument) => {
 };
 
 const getImages = (product: ProductDocument) => {
-  return product.featuredImage ? [product.featuredImage] : [];
+  const candidates = [product.featuredImage, ...(product.images ?? [])].filter(isPublicImageUrl) as string[];
+  return Array.from(new Set(candidates));
+};
+
+const getListingDescription = (product: ProductDocument) => {
+  const preferredDescription = product.ebayDescriptionOverride?.trim() || product.description;
+  const notes = product.ebayListingNotes?.trim();
+
+  if (!notes) {
+    return sanitizeHtmlDescription(preferredDescription);
+  }
+
+  return sanitizeHtmlDescription([preferredDescription, notes].filter(Boolean).join('\n\n'));
+};
+
+const getCondition = (product: ProductDocument) => {
+  const config = getEbayCommerceConfig();
+  return product.ebayCondition?.trim() || config.condition;
 };
 
 export const ebayProductMapper = {
   getSku: buildSku,
+  getPrice,
+  getQuantity,
+  getImages,
+  getCondition,
+  getListingDescription,
 
   toInventoryItem(product: ProductDocument): EbayInventoryItemPayload {
-    const config = getEbayCommerceConfig();
-
     return {
       availability: {
         shipToLocationAvailability: {
           quantity: getQuantity(product)
         }
       },
-      condition: config.condition,
+      condition: getCondition(product),
       product: {
         title: product.title,
-        description: sanitizeHtmlDescription(product.description),
+        description: getListingDescription(product),
         imageUrls: getImages(product),
         aspects: buildAspectMap(product)
       }
@@ -132,9 +158,9 @@ export const ebayProductMapper = {
       marketplaceId: product.ebayMarketplaceId || config.marketplaceId,
       format: config.listingFormat,
       availableQuantity: getQuantity(product),
-      categoryId: config.categoryId,
+      categoryId: product.ebayCategoryId || config.categoryId,
       merchantLocationKey: config.merchantLocationKey,
-      listingDescription: sanitizeHtmlDescription(product.description),
+      listingDescription: getListingDescription(product),
       listingPolicies: {
         paymentPolicyId: config.paymentPolicyId,
         returnPolicyId: config.returnPolicyId,
@@ -143,7 +169,7 @@ export const ebayProductMapper = {
       pricingSummary: {
         price: {
           value: getPrice(product),
-          currency: config.currency
+          currency: product.ebayCurrency || config.currency
         }
       },
       listingDuration: config.listingDuration

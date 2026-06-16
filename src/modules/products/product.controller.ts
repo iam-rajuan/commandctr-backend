@@ -7,6 +7,10 @@ import { productService } from './product.service';
 const getParam = (value: string | string[] | undefined): string => (Array.isArray(value) ? value[0] ?? '' : value ?? '');
 
 export const productController = {
+  createProduct: asyncHandler(async (req, res) => {
+    const product = await productService.createProduct(req.user!.userId, req.body);
+    res.status(httpStatus.CREATED).json(ApiResponse.success('Product created successfully', product));
+  }),
   getProducts: asyncHandler(async (req, res) => {
     const products = await productService.getProducts(req.user!.userId);
     res.status(httpStatus.OK).json(ApiResponse.success('Products fetched successfully', products));

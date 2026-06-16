@@ -6,7 +6,7 @@ import { IProduct } from './product.interface';
 
 const variantSchema = new Schema(
   {
-    shopifyVariantId: { type: String, required: true },
+    shopifyVariantId: { type: String },
     title: { type: String, required: true },
     sku: { type: String },
     price: { type: String },
@@ -31,6 +31,7 @@ const productSchema = new Schema<IProduct>(
     tags: { type: [String], default: [] },
     totalInventory: { type: Number, default: 0 },
     featuredImage: { type: String },
+    images: { type: [String], default: [] },
     variants: { type: [variantSchema], default: [] },
     rawShopifyData: { type: Schema.Types.Mixed },
     lastSyncedAt: { type: Date },
@@ -39,6 +40,12 @@ const productSchema = new Schema<IProduct>(
     ebayListingId: { type: String },
     ebaySku: { type: String },
     ebayMarketplaceId: { type: String },
+    ebayCurrency: { type: String },
+    ebayCondition: { type: String },
+    ebayCategoryId: { type: String },
+    ebayItemSpecifics: { type: Map, of: [String], default: undefined },
+    ebayListingNotes: { type: String },
+    ebayDescriptionOverride: { type: String },
     ebayStatus: { type: String, enum: ['draft', 'active', 'ended'] },
     lastEbaySyncAt: { type: Date },
     rawEbayPayload: { type: Schema.Types.Mixed }

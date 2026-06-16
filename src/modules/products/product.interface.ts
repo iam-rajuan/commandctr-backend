@@ -1,7 +1,7 @@
 import { HydratedDocument } from 'mongoose';
 
 export interface ProductVariant {
-  shopifyVariantId: string;
+  shopifyVariantId?: string;
   title: string;
   sku?: string;
   price?: string;
@@ -23,6 +23,7 @@ export interface IProduct {
   tags: string[];
   totalInventory?: number;
   featuredImage?: string;
+  images?: string[];
   variants: ProductVariant[];
   rawShopifyData?: unknown;
   lastSyncedAt?: Date;
@@ -31,6 +32,12 @@ export interface IProduct {
   ebayListingId?: string;
   ebaySku?: string;
   ebayMarketplaceId?: string;
+  ebayCurrency?: string;
+  ebayCondition?: string;
+  ebayCategoryId?: string;
+  ebayItemSpecifics?: Record<string, string[]>;
+  ebayListingNotes?: string;
+  ebayDescriptionOverride?: string;
   ebayStatus?: 'draft' | 'active' | 'ended';
   lastEbaySyncAt?: Date;
   rawEbayPayload?: unknown;

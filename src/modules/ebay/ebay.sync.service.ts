@@ -1,5 +1,7 @@
 import { logger } from '@/config/logger';
 import { httpStatus } from '@/constants/http.constant';
+import { marketplaceConnectionService } from '@/modules/marketplace-connections/marketplace-connection.service';
+import { ProductModel } from '@/modules/products/product.model';
 import { syncLogService } from '@/modules/sync/sync-log.service';
 import { ApiError } from '@/shared/api-error';
 
@@ -9,12 +11,107 @@ import { EbaySyncJobDocument, EbaySyncJobOperation } from './ebay-sync-job.inter
 import { ebayInventoryService } from './ebay.inventory.service';
 import { ebayListingService } from './ebay.listing.service';
 import { ebayOfferService } from './ebay.offer.service';
+import { ebayProductMapper } from './ebay.product.mapper';
 
 const WORKER_INTERVAL_MS = 2000;
 let workerTimer: NodeJS.Timeout | null = null;
 let isProcessing = false;
 
 const getRetryDelay = (attempt: number) => Math.min(1000 * 2 ** attempt, 30000);
+
+const getEbayEnvironment = () => getEbayCommerceConfig().environment;
+
+const validatePublishReadiness = async (userId: string, productId: string) => {
+  const product = await ProductModel.findOne({ _id: productId, userId });
+  if (!product) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Product not found.');
+  }
+
+  const config = getEbayCommerceConfig();
+  const connection = await marketplaceConnectionService.getEbayConnection(userId, getEbayEnvironment());
+  const missingFields: string[] = [];
+
+  const sku = ebayProductMapper.getSku(product)?.trim();
+  const price = ebayProductMapper.getPrice(product)?.trim();
+  const quantity = ebayProductMapper.getQuantity(product);
+  const images = ebayProductMapper.getImages(product);
+  const condition = ebayProductMapper.getCondition(product)?.trim();
+  const listingDescription = ebayProductMapper.getListingDescription(product)?.trim();
+  const categoryId = product.ebayCategoryId?.trim() || config.categoryId;
+  const marketplaceId = product.ebayMarketplaceId?.trim() || config.marketplaceId;
+  const currency = product.ebayCurrency?.trim() || config.currency;
+
+  if (!connection || connection.status !== 'connected' || !connection.accessTokenEncrypted) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Reconnect eBay with inventory permissions.');
+  }
+
+  const hasInventoryScope = connection.scopes.some((scope) => scope.includes('sell.inventory'));
+  if (!hasInventoryScope) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Reconnect eBay with inventory permissions.');
+  }
+
+  if (!product.title?.trim()) {
+    missingFields.push('title');
+  }
+
+  if (!listingDescription) {
+    missingFields.push('description');
+  }
+
+  if (!sku) {
+    missingFields.push('sku');
+  }
+
+  if (!price || !Number.isFinite(Number(price)) || Number(price) < 0) {
+    missingFields.push('price');
+  }
+
+  if (!Number.isFinite(quantity) || quantity < 0) {
+    missingFields.push('inventory quantity');
+  }
+
+  if (images.length === 0) {
+    missingFields.push('public image URL');
+  }
+
+  if (!categoryId) {
+    missingFields.push('categoryId');
+  }
+
+  if (!condition) {
+    missingFields.push('condition');
+  }
+
+  if (!config.merchantLocationKey) {
+    missingFields.push('merchant location key');
+  }
+
+  if (!config.paymentPolicyId) {
+    missingFields.push('payment policy ID');
+  }
+
+  if (!config.fulfillmentPolicyId) {
+    missingFields.push('fulfillment policy ID');
+  }
+
+  if (!config.returnPolicyId) {
+    missingFields.push('return policy ID');
+  }
+
+  if (!marketplaceId) {
+    missingFields.push('marketplace ID');
+  }
+
+  if (!currency) {
+    missingFields.push('currency');
+  }
+
+  if (missingFields.length > 0) {
+    throw new ApiError(httpStatus.BAD_REQUEST, `eBay sandbox publishing is missing configuration: ${missingFields.join(', ')}.`);
+  }
+
+  return product;
+};
 
 const isRetryableError = (error: unknown) => {
   if (!(error instanceof ApiError)) {
@@ -183,6 +280,7 @@ export const ebaySyncService = {
   },
 
   async publishListing(userId: string, productId: string) {
+    await validatePublishReadiness(userId, productId);
     return enqueue(userId, 'publish_listing', productId);
   },
 
