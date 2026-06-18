@@ -55,6 +55,57 @@ export const ebayInventoryService = {
     return this.createInventoryItem(userId, productId);
   },
 
+  async updateQuantity(userId: string, productId: string, quantity: number) {
+    const product = await ProductModel.findOne({ _id: productId, userId });
+    if (!product) {
+      throw new Error('Product not found');
+    }
+
+    const sku = product.ebayInventoryItemId || product.ebaySku;
+    if (!sku) {
+      throw new Error('eBay inventory SKU is missing for this product.');
+    }
+
+    const normalizedQuantity = Math.max(Math.trunc(quantity), 0);
+    const request = {
+      sku,
+      shipToLocationAvailability: {
+        quantity: normalizedQuantity
+      },
+      ...(product.ebayOfferId
+        ? {
+            offers: [
+              {
+                offerId: product.ebayOfferId,
+                availableQuantity: normalizedQuantity
+              }
+            ]
+          }
+        : {})
+    };
+    const result = await ebayClient.request({
+      userId,
+      method: 'POST',
+      path: '/sell/inventory/v1/bulk_update_price_quantity',
+      operation: 'update_inventory_quantity',
+      body: {
+        requests: [request]
+      }
+    });
+
+    product.lastEbaySyncAt = new Date();
+    product.rawEbayPayload = {
+      ...(typeof product.rawEbayPayload === 'object' && product.rawEbayPayload ? product.rawEbayPayload : {}),
+      quantityUpdate: {
+        request,
+        response: result.data
+      }
+    };
+    await product.save();
+
+    return { ...result, data: { sku, offerId: product.ebayOfferId, quantity: normalizedQuantity } };
+  },
+
   async getInventoryItem(userId: string, sku: string) {
     return ebayClient.request({
       userId,

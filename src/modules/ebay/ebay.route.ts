@@ -13,6 +13,12 @@ ebayRouter.use(authMiddleware);
 ebayRouter.get('/connect-url', ebayController.connectUrl);
 ebayRouter.get('/status', ebayController.status);
 ebayRouter.post('/disconnect', ebayController.disconnect);
+ebayRouter.get('/inventory', ebayController.getInventory);
+ebayRouter.patch(
+  '/products/:productId/inventory',
+  validateRequest(ebayValidation.updateInventory),
+  ebayController.updateInventory
+);
 ebayRouter.post('/products/:productId/sync', validateRequest(ebayValidation.productParams), ebayController.queueProductSync);
 ebayRouter.post(
   '/products/:productId/sync-inventory',

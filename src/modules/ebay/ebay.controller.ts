@@ -24,6 +24,18 @@ export const ebayController = {
     const result = await ebayService.disconnect(req.user!.userId);
     res.status(httpStatus.OK).json(ApiResponse.success('eBay seller account disconnected successfully', result));
   }),
+  getInventory: asyncHandler(async (req, res) => {
+    const inventory = await ebayListingService.getInventory(req.user!.userId);
+    res.status(httpStatus.OK).json(ApiResponse.success('eBay inventory fetched successfully', inventory));
+  }),
+  updateInventory: asyncHandler(async (req, res) => {
+    const inventory = await ebayListingService.updateInventoryQuantity(
+      req.user!.userId,
+      getParam(req.params.productId),
+      req.body.quantity
+    );
+    res.status(httpStatus.OK).json(ApiResponse.success('eBay inventory updated successfully', inventory));
+  }),
   queueProductSync: asyncHandler(async (req, res) => {
     const job = await ebaySyncService.syncProductToEbay(req.user!.userId, getParam(req.params.productId));
     res.status(httpStatus.ACCEPTED).json(ApiResponse.success('eBay product sync queued successfully', job));

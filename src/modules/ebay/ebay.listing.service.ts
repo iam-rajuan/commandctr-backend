@@ -15,7 +15,97 @@ const getProduct = async (userId: string, productId: string) => {
   return product;
 };
 
+type EbayInventoryItemResponse = {
+  availability?: {
+    shipToLocationAvailability?: {
+      quantity?: number;
+    };
+  };
+};
+
+const getStoredQuantity = (product: Awaited<ReturnType<typeof getProduct>>) => {
+  const variantQuantity = product.variants[0]?.inventoryQuantity;
+  return Math.max(typeof variantQuantity === 'number' ? variantQuantity : product.totalInventory ?? 0, 0);
+};
+
+const toInventoryResponse = (
+  product: Awaited<ReturnType<typeof getProduct>>,
+  inventoryItem?: EbayInventoryItemResponse,
+  syncError?: string
+) => ({
+  productId: product._id.toString(),
+  productAiProductId: product.productAiProductId,
+  title: product.title,
+  sku: product.ebaySku || product.ebayInventoryItemId || product.variants[0]?.sku || '',
+  inventoryItemId: product.ebayInventoryItemId || product.ebaySku || '',
+  offerId: product.ebayOfferId,
+  listingId: product.ebayListingId,
+  status: product.ebayStatus ?? 'draft',
+  quantity: Math.max(
+    inventoryItem?.availability?.shipToLocationAvailability?.quantity ?? getStoredQuantity(product),
+    0
+  ),
+  featuredImage: product.featuredImage,
+  updatedAt: (product as typeof product & { updatedAt?: Date }).updatedAt,
+  syncError
+});
+
 export const ebayListingService = {
+  async getInventory(userId: string) {
+    const products = await ProductModel.find({
+      userId,
+      $or: [{ ebayInventoryItemId: { $type: 'string' } }, { ebaySku: { $type: 'string' } }]
+    }).sort({ updatedAt: -1 });
+
+    return Promise.all(
+      products.map(async (product) => {
+        const sku = product.ebayInventoryItemId || product.ebaySku;
+        if (!sku) {
+          return toInventoryResponse(product);
+        }
+
+        try {
+          const result = await ebayInventoryService.getInventoryItem(userId, sku);
+          return toInventoryResponse(product, result.data as EbayInventoryItemResponse | undefined);
+        } catch (error) {
+          return toInventoryResponse(
+            product,
+            undefined,
+            error instanceof Error ? error.message : 'Could not refresh eBay inventory.'
+          );
+        }
+      })
+    );
+  },
+
+  async updateInventoryQuantity(userId: string, productId: string, quantity: number) {
+    const product = await getProduct(userId, productId);
+    const normalizedQuantity = Math.max(Math.trunc(quantity), 0);
+
+    const primaryVariant = product.variants[0];
+    if (primaryVariant) {
+      primaryVariant.inventoryQuantity = normalizedQuantity;
+    } else {
+      product.variants.push({
+        title: 'Default Title',
+        sku: product.ebaySku || product.ebayInventoryItemId,
+        inventoryQuantity: normalizedQuantity
+      });
+    }
+    product.totalInventory = normalizedQuantity;
+    await product.save();
+
+    await ebayInventoryService.updateQuantity(userId, productId, normalizedQuantity);
+
+    const refreshedProduct = await getProduct(userId, productId);
+    const sku = refreshedProduct.ebayInventoryItemId || refreshedProduct.ebaySku;
+    const inventoryResult = sku ? await ebayInventoryService.getInventoryItem(userId, sku) : undefined;
+    return toInventoryResponse(
+      refreshedProduct,
+      inventoryResult?.data as EbayInventoryItemResponse | undefined
+    );
+  },
+
   async syncProductRecord(userId: string, productId: string) {
     const product = await getProduct(userId, productId);
 

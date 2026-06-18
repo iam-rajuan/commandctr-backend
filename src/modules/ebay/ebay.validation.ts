@@ -6,6 +6,14 @@ export const ebayValidation = {
       productId: z.string().min(1)
     })
   }),
+  updateInventory: z.object({
+    params: z.object({
+      productId: z.string().min(1)
+    }),
+    body: z.object({
+      quantity: z.number().int().min(0)
+    })
+  }),
   jobParams: z.object({
     params: z.object({
       jobId: z.string().min(1)
