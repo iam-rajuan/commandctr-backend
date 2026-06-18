@@ -22,6 +22,7 @@ const productSchema = new Schema<IProduct>(
     userId: { type: String, required: true, index: true },
     marketplace: { type: String, enum: MARKETPLACES, default: 'shopify' },
     shopifyProductId: { type: String },
+    productAiProductId: { type: String },
     title: { type: String, required: true },
     description: { type: String },
     handle: { type: String },

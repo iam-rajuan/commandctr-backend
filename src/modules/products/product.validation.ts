@@ -17,6 +17,7 @@ export const productValidation = {
     body: z.object({
       marketplace: z.enum(['shopify', 'ebay', 'etsy']).optional(),
       shopifyProductId: z.string().min(1).optional(),
+      productAiProductId: z.string().min(1).optional(),
       title: z.string().min(1),
       description: z.string().optional(),
       handle: z.string().optional(),
@@ -52,6 +53,7 @@ export const productValidation = {
       images: z.array(z.string()).optional(),
       variants: z.array(productVariantSchema).optional(),
       marketplace: z.enum(['shopify', 'ebay', 'etsy']).optional(),
+      productAiProductId: z.string().min(1).optional(),
       ebaySku: z.string().optional(),
       ebayMarketplaceId: z.string().optional(),
       ebayCurrency: z.string().optional(),

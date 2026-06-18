@@ -14,6 +14,7 @@ export interface IProduct {
   userId: string;
   marketplace: 'shopify' | 'ebay' | 'etsy';
   shopifyProductId?: string;
+  productAiProductId?: string;
   title: string;
   description?: string;
   handle?: string;

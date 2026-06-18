@@ -110,6 +110,7 @@ const buildCreateProductPayload = (payload: Partial<IProduct>) => {
     variants,
     totalInventory,
     shopifyProductId: payload.shopifyProductId?.trim() || undefined,
+    productAiProductId: payload.productAiProductId?.trim() || undefined,
     ebaySku: payload.ebaySku?.trim() || undefined,
     ebayMarketplaceId: payload.ebayMarketplaceId?.trim() || undefined,
     ebayCurrency: payload.ebayCurrency?.trim() || undefined,
@@ -180,6 +181,10 @@ const buildUpdateProductPayload = (payload: Partial<IProduct>) => {
 
   if (hasOwn(payload, 'shopifyProductId')) {
     productPayload.shopifyProductId = payload.shopifyProductId?.trim() || undefined;
+  }
+
+  if (hasOwn(payload, 'productAiProductId')) {
+    productPayload.productAiProductId = payload.productAiProductId?.trim() || undefined;
   }
 
   if (hasOwn(payload, 'ebaySku')) {
