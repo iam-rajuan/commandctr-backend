@@ -41,23 +41,15 @@ marketplaceConnectionSchema.index(
   }
 );
 
+// A single unique compound index covers both eBay and Etsy: because `marketplace`
+// is part of the key, uniqueness is still enforced per (userId, marketplace, environment).
 marketplaceConnectionSchema.index(
   { userId: 1, marketplace: 1, environment: 1 },
   {
+    name: 'uniq_marketplace_environment_connection',
     unique: true,
     partialFilterExpression: {
-      marketplace: 'ebay',
-      environment: { $exists: true, $type: 'string' }
-    }
-  }
-);
-
-marketplaceConnectionSchema.index(
-  { userId: 1, marketplace: 1, environment: 1 },
-  {
-    unique: true,
-    partialFilterExpression: {
-      marketplace: 'etsy',
+      marketplace: { $in: ['ebay', 'etsy'] },
       environment: { $exists: true, $type: 'string' }
     }
   }

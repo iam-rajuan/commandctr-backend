@@ -12,7 +12,8 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "seed:admin": "tsx -r tsconfig-paths/register src/modules/seed/seed-admin.ts"
+    "seed:admin": "tsx -r tsconfig-paths/register src/modules/seed/seed-admin.ts",
+    "cleanup:ebay-stale": "tsx -r tsconfig-paths/register src/modules/ebay/scripts/clear-stale-ebay-fields.ts"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -206,7 +206,35 @@ export const ebayListingService = {
       };
     }
 
-    const offer = await ebayOfferService.getOffer(userId, product.ebayOfferId);
+    let offer;
+    try {
+      offer = await ebayOfferService.getOffer(userId, product.ebayOfferId);
+    } catch (error) {
+      // A 404 here means eBay no longer has this offer (e.g. it was deleted, ended,
+      // or the offer id is stale after credentials/account changed). That is an
+      // expected state, not a request failure — report it instead of bubbling a 404.
+      if (error instanceof ApiError && error.statusCode === httpStatus.NOT_FOUND) {
+        return {
+          success: true,
+          marketplace: 'ebay' as const,
+          operation: 'get_listing_status',
+          statusCode: httpStatus.OK,
+          retryable: false,
+          data: {
+            productId,
+            sku: product.ebaySku,
+            listingId: product.ebayListingId,
+            offerId: product.ebayOfferId,
+            status: 'not_found' as const,
+            offer: null,
+            syncError: 'This eBay offer is no longer available.'
+          }
+        };
+      }
+
+      throw error;
+    }
+
     return {
       ...offer,
       operation: 'get_listing_status',
