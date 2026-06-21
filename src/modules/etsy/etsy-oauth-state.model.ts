@@ -20,7 +20,7 @@ const etsyOAuthStateSchema = new Schema<IEtsyOAuthState>(
     codeVerifier: { type: String, required: true },
     marketplace: { type: String, enum: ['etsy'], default: 'etsy', required: true },
     environment: { type: String, enum: ['production'], default: 'production', required: true },
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
     consumed: { type: Boolean, default: false, index: true },
     consumedAt: { type: Date }
   },

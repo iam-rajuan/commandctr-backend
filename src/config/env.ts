@@ -20,18 +20,29 @@ const optionalUrl = () => z.preprocess(emptyStringToUndefined, z.string().url().
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   TRUST_PROXY: z
-    .union([z.boolean(), z.enum(['true', 'false', '1', '0'])])
+    .union([z.boolean(), z.string()])
     .optional()
     .transform((value) => {
-      if (typeof value === 'boolean') {
+      if (typeof value === 'boolean' || value === undefined) {
         return value;
       }
 
-      if (value === undefined) {
-        return undefined;
+      if (value === 'true') {
+        return true;
       }
 
-      return value === 'true' || value === '1';
+      if (value === 'false') {
+        return false;
+      }
+
+      // Numeric hop counts (e.g. "1") are the recommended, non-permissive setting.
+      const hops = Number(value);
+      if (Number.isInteger(hops) && hops >= 0) {
+        return hops;
+      }
+
+      // Anything else (e.g. "loopback", a subnet/IP list) is passed through as-is.
+      return value;
     }),
   PORT: z.coerce.number().int().positive().default(5000),
   API_PREFIX: z.string().min(1).default('/api/v1'),

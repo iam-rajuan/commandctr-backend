@@ -1,9 +1,34 @@
 import { httpStatus } from '@/constants/http.constant';
+import { logger } from '@/config/logger';
 import { ProductModel } from '@/modules/products/product.model';
 import { ApiError } from '@/shared/api-error';
 
 import { ebayClient } from './ebay.client';
 import { ebayProductMapper } from './ebay.product.mapper';
+
+// eBay errorIds that mean the offer no longer exists for this seller (stale offerId).
+// 25710 = resource not found, 25713 = "This Offer is not available."
+const STALE_OFFER_ERROR_IDS = new Set([25710, 25713]);
+
+const isStaleOfferError = (error: unknown): boolean => {
+  if (!(error instanceof ApiError)) {
+    return false;
+  }
+
+  if (error.statusCode === httpStatus.NOT_FOUND) {
+    return true;
+  }
+
+  const details = error.details as
+    | { data?: { errors?: Array<{ errorId?: number }> } }
+    | undefined;
+  const errors = details?.data?.errors;
+  if (Array.isArray(errors)) {
+    return errors.some((entry) => typeof entry.errorId === 'number' && STALE_OFFER_ERROR_IDS.has(entry.errorId));
+  }
+
+  return false;
+};
 
 export const ebayOfferService = {
   async createOffer(userId: string, productId: string) {
@@ -51,13 +76,35 @@ export const ebayOfferService = {
     }
 
     const payload = ebayProductMapper.toOffer(product);
-    const result = await ebayClient.request({
-      userId,
-      method: 'PUT',
-      path: `/sell/inventory/v1/offer/${encodeURIComponent(product.ebayOfferId)}`,
-      operation: 'update_offer',
-      body: payload
-    });
+    let result;
+    try {
+      result = await ebayClient.request({
+        userId,
+        method: 'PUT',
+        path: `/sell/inventory/v1/offer/${encodeURIComponent(product.ebayOfferId)}`,
+        operation: 'update_offer',
+        body: payload
+      });
+    } catch (error) {
+      // The stored offerId no longer exists on eBay (e.g. stale offer from a previous
+      // seller/marketplace). Clear the stale reference and create a fresh offer using
+      // the current active config instead of failing the publish.
+      if (isStaleOfferError(error)) {
+        logger.warn(
+          { productId, staleOfferId: product.ebayOfferId },
+          'eBay offer is stale; clearing stored offer references and recreating'
+        );
+
+        product.ebayOfferId = undefined;
+        product.ebayListingId = undefined;
+        product.lastEbaySyncAt = new Date();
+        await product.save();
+
+        return this.createOffer(userId, productId);
+      }
+
+      throw error;
+    }
 
     product.ebaySku = payload.sku;
     product.ebayMarketplaceId = payload.marketplaceId;
