@@ -5,9 +5,9 @@
   "description": "Production-grade modular backend foundation for CommandCtr.",
   "main": "dist/server.js",
   "scripts": {
-    "dev": "tsx watch -r tsconfig-paths/register src/server.ts",
-    "build": "tsc --project tsconfig.json && tsc-alias -p tsconfig.json",
-    "start": "node dist/server.js",
+    "dev": "node api.js && tsx watch -r tsconfig-paths/register src/server.ts",
+    "build": "node api.js && tsc --project tsconfig.json && tsc-alias -p tsconfig.json",
+    "start": "node api.js && node dist/server.js",
     "lint": "eslint .",
     "format": "prettier --write .",
     "test": "vitest run",
