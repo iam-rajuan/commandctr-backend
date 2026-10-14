@@ -40,7 +40,7 @@ app.use(requestLoggerMiddleware);
 app.get('/', (_req, res) => {
   res
     .status(httpStatus.OK)
-    .json(ApiResponse.success('CommandCtr backend is running', { version: '1.0.0' }));
+    .json(ApiResponse.success('Twinstr backend is running', { version: '1.0.0' }));
 });
 
 setupSwagger(app);

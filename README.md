@@ -1,6 +1,6 @@
-# CommandCtr Backend
+# Twinstr Backend
 
-Production-grade modular backend foundation for the CommandCtr multi-channel e-commerce operating system.
+Production-grade modular backend foundation for the Twinstr multi-channel e-commerce operating system.
 
 ## Tech Stack
 
@@ -61,9 +61,9 @@ Expected shape:
 ```json
 {
   "success": true,
-  "message": "CommandCtr API is healthy",
+  "message": "Twinstr API is healthy",
   "data": {
-    "service": "CommandCtr Backend",
+    "service": "Twinstr Backend",
     "status": "ok",
     "timestamp": "ISO_DATE",
     "uptime": 123

@@ -1,4 +1,4 @@
-export const APP_NAME = 'CommandCtr Backend';
+export const APP_NAME = 'Twinstr Backend';
 export const APP_VERSION = '1.0.0';
 export const USER_ROLES = ['user', 'admin', 'super_admin'] as const;
 export const USER_STATUSES = ['active', 'blocked'] as const;

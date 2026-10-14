@@ -166,14 +166,14 @@ const logEbayAuthorizeUrl = (details: {
 const signOAuthState = (payload: EbayOAuthStatePayload) =>
   jwt.sign(payload, env.JWT_ACCESS_SECRET, {
     expiresIn: EBAY_STATE_TTL_SECONDS,
-    issuer: 'commandctr',
+    issuer: 'twinstr',
     audience: 'ebay-oauth'
   });
 
 const verifyOAuthState = (token: string): EbayOAuthStatePayload => {
   try {
     const payload = jwt.verify(token, env.JWT_ACCESS_SECRET, {
-      issuer: 'commandctr',
+      issuer: 'twinstr',
       audience: 'ebay-oauth'
     }) as EbayOAuthStatePayload;
 

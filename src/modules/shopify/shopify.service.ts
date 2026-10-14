@@ -1054,7 +1054,7 @@ const updateShopifyInventoryItem = async (
 };
 
 const buildShopifyImageMarker = (imagePath: string) =>
-  `commandctr-shopify-image:${createHash('sha256').update(imagePath).digest('hex').slice(0, 16)}`;
+  `twinstr-shopify-image:${createHash('sha256').update(imagePath).digest('hex').slice(0, 16)}`;
 
 const getFrontendImageProxyUrl = (imagePath: string) => {
   if (!env.FRONTEND_URL) {
@@ -3132,7 +3132,7 @@ export const shopifyService = {
         input: {
           name: 'available',
           reason: 'correction',
-          referenceDocumentUri: `gid://commandctr/InventoryAdjustment/${inventoryItemId}`,
+          referenceDocumentUri: `gid://twinstr/InventoryAdjustment/${inventoryItemId}`,
           quantities: [{
             inventoryItemId,
             locationId: payload.locationId,

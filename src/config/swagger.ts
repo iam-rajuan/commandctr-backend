@@ -12,7 +12,7 @@ const spec = swaggerJSDoc({
     info: {
       title: `${APP_NAME} API`,
       version: APP_VERSION,
-      description: 'CommandCtr marketplace backend APIs.'
+      description: 'Twinstr marketplace backend APIs.'
     },
     servers: [{ url: 'http://localhost:5000' }],
     components: {
@@ -198,7 +198,7 @@ const spec = swaggerJSDoc({
         get: {
           tags: ['eBay'],
           summary: 'Generate eBay OAuth connect URL',
-          description: 'Protected endpoint for CommandCtr merchants. Call this endpoint with Bearer auth, then redirect the browser to the returned connectUrl.',
+          description: 'Protected endpoint for Twinstr merchants. Call this endpoint with Bearer auth, then redirect the browser to the returned connectUrl.',
           security: bearerSecurity,
           responses: {
             '200': {
@@ -257,7 +257,7 @@ const spec = swaggerJSDoc({
         get: {
           tags: ['Etsy'],
           summary: 'Generate Etsy OAuth connect URL',
-          description: 'Protected endpoint for CommandCtr merchants. Call this endpoint with Bearer auth, then redirect the browser to the returned connectUrl.',
+          description: 'Protected endpoint for Twinstr merchants. Call this endpoint with Bearer auth, then redirect the browser to the returned connectUrl.',
           security: bearerSecurity,
           responses: {
             '200': {
@@ -346,7 +346,7 @@ const spec = swaggerJSDoc({
           summary: 'Create Shopify product',
           description: 'Accepts the frontend variants array for convenience. The backend currently creates the Shopify product first, then applies price and SKU to the default Shopify variant using only the first item from variants.',
           security: bearerSecurity,
-          requestBody: { content: { 'application/json': { example: { title: 'Demo product', description: '<p>Demo description</p>', vendor: 'CommandCtr', productType: 'Apparel', status: 'ACTIVE', tags: ['demo'], variants: [{ title: 'Default Title', price: '29.99', sku: 'DEMO-001' }] } } } },
+          requestBody: { content: { 'application/json': { example: { title: 'Demo product', description: '<p>Demo description</p>', vendor: 'Twinstr', productType: 'Apparel', status: 'ACTIVE', tags: ['demo'], variants: [{ title: 'Default Title', price: '29.99', sku: 'DEMO-001' }] } } } },
           responses: { '201': { description: 'Created' } }
         }
       },

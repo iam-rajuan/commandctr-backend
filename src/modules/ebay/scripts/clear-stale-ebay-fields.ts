@@ -7,7 +7,7 @@ import { UserModel } from '@/modules/users/user.model';
 
 import { getEbayCommerceConfig } from '../ebay.client';
 
-const ADMIN_EMAIL = 'admin@commandctr.com';
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@twinstr.com';
 
 /**
  * P0 data cleanup: clear stale eBay offer/listing references left over from US (or any

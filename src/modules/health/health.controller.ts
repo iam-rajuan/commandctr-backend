@@ -9,5 +9,5 @@ export const getHealth = asyncHandler(async (_req, res) => {
 
   res
     .status(httpStatus.OK)
-    .json(ApiResponse.success('CommandCtr API is healthy', health));
+    .json(ApiResponse.success('Twinstr API is healthy', health));
 });

@@ -4,9 +4,9 @@ import { logger } from '@/config/logger';
 import { UserModel } from '@/modules/users/user.model';
 
 const DEFAULT_ADMIN = {
-  firstName: 'CommandCtr',
+  firstName: 'Twinstr',
   lastName: 'Admin',
-  email: 'admin@commandctr.com',
+  email: 'admin@twinstr.com',
   password: 'admin@123',
   role: 'admin' as const,
   status: 'active' as const
