@@ -1,6 +1,25 @@
 import { z } from 'zod';
 
 export const shopifyValidation = {
+  bulkUpload: z.object({
+    body: z.object({
+      publishToOnlineStore: z.boolean().optional(),
+      rows: z.array(z.object({
+        title: z.string().max(255),
+        description: z.string().optional(),
+        vendor: z.string().max(255).optional(),
+        productType: z.string().max(255).optional(),
+        tags: z.array(z.string().max(255)).optional(),
+        handle: z.string().max(255).optional(),
+        status: z.enum(['ACTIVE', 'DRAFT']).optional(),
+        optionName: z.string().max(255).optional(),
+        optionValue: z.string().max(255).optional(),
+        price: z.string().max(32).optional(),
+        sku: z.string().max(255).optional(),
+        barcode: z.string().max(255).optional()
+      })).min(1).max(5000)
+    })
+  }),
   createProduct: z.object({
     body: z.object({
       title: z.string().min(1),

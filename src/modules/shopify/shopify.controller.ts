@@ -56,6 +56,22 @@ export const shopifyController = {
     const result = await shopifyService.getProducts(req.user!.userId);
     res.status(httpStatus.OK).json(ApiResponse.success('Shopify products fetched successfully', result));
   }),
+  startBulkUpload: asyncHandler(async (req, res) => {
+    const result = await shopifyService.startBulkUpload(req.user!.userId, req.body);
+    res.status(httpStatus.ACCEPTED).json(ApiResponse.success('Shopify bulk upload started successfully', result));
+  }),
+  getBulkJob: asyncHandler(async (req, res) => {
+    const result = await shopifyService.getBulkJob(req.user!.userId, getParam(req.params.jobId));
+    res.status(httpStatus.OK).json(ApiResponse.success('Shopify bulk upload job fetched successfully', result));
+  }),
+  listBulkJobs: asyncHandler(async (req, res) => {
+    const result = await shopifyService.listBulkJobs(req.user!.userId);
+    res.status(httpStatus.OK).json(ApiResponse.success('Shopify bulk upload jobs fetched successfully', result));
+  }),
+  cancelBulkJob: asyncHandler(async (req, res) => {
+    const result = await shopifyService.cancelBulkJob(req.user!.userId, getParam(req.params.jobId));
+    res.status(httpStatus.OK).json(ApiResponse.success('Shopify bulk upload canceled successfully', result));
+  }),
   createProduct: asyncHandler(async (req, res) => {
     const result = await shopifyService.createProduct(req.user!.userId, req.body);
     res.status(httpStatus.CREATED).json(ApiResponse.success('Shopify product created successfully', result));

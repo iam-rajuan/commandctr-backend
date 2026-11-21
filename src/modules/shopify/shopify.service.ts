@@ -17,6 +17,7 @@ import { encryptionUtils } from '@/utils/encryption';
 import { toSlug } from '@/utils/slug';
 
 import { shopifyClient } from './shopify.client';
+import { ShopifyBulkJobModel } from './shopify-bulk-job.model';
 import { shopifyMapper } from './shopify.mapper';
 
 type ShopifyInventoryLevel = {
@@ -207,6 +208,21 @@ type ShopifyProductMutationPayload = {
     weight?: number;
     weightUnit?: string;
   }>;
+};
+
+type ShopifyBulkUploadRow = {
+  title: string;
+  description?: string;
+  vendor?: string;
+  productType?: string;
+  tags?: string[];
+  handle?: string;
+  status?: 'ACTIVE' | 'DRAFT';
+  optionName?: string;
+  optionValue?: string;
+  price?: string;
+  sku?: string;
+  barcode?: string;
 };
 
 type ShopifyProductMutationResult = {
@@ -2387,7 +2403,282 @@ const requireOAuthConfig = () => {
   }
 };
 
+const bulkMutationDocument = `
+  mutation bulkProductSet($input: ProductSetInput!) {
+    productSet(input: $input, synchronous: true) {
+      product { id title }
+      userErrors { field message }
+    }
+  }
+`;
+
+const normalizeBulkRow = (row: ShopifyBulkUploadRow, index: number): ShopifyBulkUploadRow => {
+  const title = row.title?.trim();
+  if (!title) {
+    throw new ApiError(httpStatus.BAD_REQUEST, `Row ${index + 1}: title is required.`);
+  }
+
+  const optionName = row.optionName?.trim();
+  const optionValue = row.optionValue?.trim();
+  const price = row.price?.trim();
+  if ((optionName || optionValue || price || row.sku || row.barcode) && (!optionName || !optionValue || !price)) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      `Row ${index + 1}: option_name, option_value, and price must be supplied together to create a priced variant.`
+    );
+  }
+  if (price && (!Number.isFinite(Number(price)) || Number(price) < 0)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, `Row ${index + 1}: price must be a non-negative number.`);
+  }
+
+  const status = row.status?.toUpperCase();
+  if (status && status !== 'ACTIVE' && status !== 'DRAFT') {
+    throw new ApiError(httpStatus.BAD_REQUEST, `Row ${index + 1}: status must be ACTIVE or DRAFT.`);
+  }
+
+  return {
+    title,
+    description: row.description?.trim() || undefined,
+    vendor: row.vendor?.trim() || undefined,
+    productType: row.productType?.trim() || undefined,
+    tags: row.tags?.map((tag) => tag.trim()).filter(Boolean) ?? [],
+    handle: row.handle?.trim() || undefined,
+    status: status as ShopifyBulkUploadRow['status'],
+    optionName,
+    optionValue,
+    price,
+    sku: row.sku?.trim() || undefined,
+    barcode: row.barcode?.trim() || undefined
+  };
+};
+
+const toBulkProductSetInput = (row: ShopifyBulkUploadRow, publishToOnlineStore: boolean) => {
+  const hasVariant = Boolean(row.optionName && row.optionValue && row.price);
+  return {
+    title: row.title,
+    descriptionHtml: row.description,
+    vendor: row.vendor,
+    productType: row.productType,
+    handle: row.handle,
+    status: publishToOnlineStore ? 'ACTIVE' : (row.status ?? 'DRAFT'),
+    tags: row.tags,
+    productOptions: hasVariant
+      ? [{ name: row.optionName, position: 1, values: [{ name: row.optionValue }] }]
+      : undefined,
+    variants: hasVariant
+      ? [{
+          optionValues: [{ optionName: row.optionName, name: row.optionValue }],
+          price: row.price,
+          sku: row.sku,
+          barcode: row.barcode
+        }]
+      : undefined
+  };
+};
+
+const parseBulkResults = (raw: string) => raw.split(/\r?\n/).filter(Boolean).map((line, index) => {
+  try {
+    const result = JSON.parse(line) as {
+      __lineNumber?: number;
+      data?: { productSet?: { product?: { id?: string }; userErrors?: Array<{ message?: string }> } };
+    };
+    const productSet = result.data?.productSet;
+    return {
+      line: result.__lineNumber ?? index + 1,
+      productId: productSet?.product?.id,
+      errors: (productSet?.userErrors ?? []).map((error) => error.message ?? 'Shopify rejected this row')
+    };
+  } catch {
+    return { line: index + 1, errors: ['Shopify returned an unreadable bulk result row.'] };
+  }
+});
+
+const uploadBulkVariables = async (access: ResolvedShopifyAccess, jsonl: string) => {
+  const staged = await shopifyClient.request<{
+    stagedUploadsCreate: {
+      stagedTargets: Array<{ url: string; resourceUrl: string; parameters: Array<{ name: string; value: string }> }>;
+      userErrors: Array<{ message: string }>;
+    };
+  }>({
+    shopDomain: access.shopDomain,
+    accessToken: access.accessToken,
+    query: `mutation StagedBulkVariables($input: [StagedUploadInput!]!) {
+      stagedUploadsCreate(input: $input) {
+        stagedTargets { url resourceUrl parameters { name value } }
+        userErrors { message }
+      }
+    }`,
+    variables: { input: [{ resource: 'BULK_MUTATION_VARIABLES', filename: 'commandctr-shopify-bulk.jsonl', mimeType: 'text/jsonl', httpMethod: 'POST' }] }
+  });
+  const target = staged.stagedUploadsCreate.stagedTargets[0];
+  const error = staged.stagedUploadsCreate.userErrors[0]?.message;
+  if (error || !target) {
+    throw new ApiError(httpStatus.BAD_GATEWAY, error ?? 'Shopify did not return a bulk upload target.');
+  }
+
+  const form = new FormData();
+  target.parameters.forEach((parameter) => form.append(parameter.name, parameter.value));
+  form.append('file', new Blob([jsonl], { type: 'text/jsonl' }), 'commandctr-shopify-bulk.jsonl');
+  const response = await fetch(target.url, { method: 'POST', body: form });
+  if (!response.ok) {
+    throw new ApiError(httpStatus.BAD_GATEWAY, 'Shopify rejected the staged bulk data upload.');
+  }
+  return target.resourceUrl;
+};
+
 export const shopifyService = {
+  async startBulkUpload(userId: string, payload: { rows: ShopifyBulkUploadRow[]; publishToOnlineStore?: boolean }) {
+    if (payload.rows.length > 5_000) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'A bulk upload can contain at most 5,000 rows.');
+    }
+    const rows = payload.rows.map(normalizeBulkRow);
+    const access = await resolveShopifyAccess(userId);
+    const activeJobs = await ShopifyBulkJobModel.countDocuments({
+      shopDomain: access.shopDomain,
+      status: { $in: ['created', 'running'] }
+    });
+    if (activeJobs >= 5) {
+      throw new ApiError(httpStatus.CONFLICT, 'This Shopify store already has five bulk uploads in progress.');
+    }
+
+    const publishToOnlineStore = payload.publishToOnlineStore === true;
+    const jsonl = rows
+      .map((row) => JSON.stringify({ input: toBulkProductSetInput(row, publishToOnlineStore) }))
+      .join('\n');
+    const stagedUploadPath = await uploadBulkVariables(access, jsonl);
+    let data: {
+      bulkOperationRunMutation: {
+        bulkOperation: { id: string; status: string } | null;
+        userErrors: Array<{ message: string }>;
+      };
+    };
+    try {
+      ({ data } = await executeShopifyRequest<{
+      bulkOperationRunMutation: {
+        bulkOperation: { id: string; status: string } | null;
+        userErrors: Array<{ message: string }>;
+      };
+      }>(
+      userId,
+      `mutation RunBulkProductSet($mutation: String!, $stagedUploadPath: String!) {
+        bulkOperationRunMutation(mutation: $mutation, stagedUploadPath: $stagedUploadPath) {
+          bulkOperation { id status }
+          userErrors { message }
+        }
+      }`,
+      { mutation: bulkMutationDocument, stagedUploadPath }
+      ));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Shopify bulk upload could not be started.';
+      if (message.includes('bulkOperationRunMutation') && message.includes('Access denied')) {
+        throw new ApiError(
+          httpStatus.FORBIDDEN,
+          'Shopify Bulk mutations are not enabled for this app. In Shopify Dev Dashboard, open the app, go to Settings > Access requests, enable Bulk mutations, then reconnect Shopify and try again.'
+        );
+      }
+      throw error;
+    }
+    const operation = data.bulkOperationRunMutation.bulkOperation;
+    const error = data.bulkOperationRunMutation.userErrors[0]?.message;
+    if (error || !operation) {
+      throw new ApiError(httpStatus.BAD_GATEWAY, error ?? 'Shopify did not start the bulk upload.');
+    }
+
+    const job = await ShopifyBulkJobModel.create({
+      userId,
+      shopDomain: access.shopDomain,
+      status: 'running',
+      operationId: operation.id,
+      operationStatus: operation.status,
+      totalRows: rows.length,
+      publishToOnlineStore
+    });
+    return job.toObject();
+  },
+
+  async getBulkJob(userId: string, jobId: string) {
+    const job = await ShopifyBulkJobModel.findOne({ _id: jobId, userId });
+    if (!job) {
+      throw new ApiError(httpStatus.NOT_FOUND, 'Shopify bulk upload job was not found.');
+    }
+    if (!job.operationId || ['completed', 'failed', 'canceled'].includes(job.status)) {
+      return job.toObject();
+    }
+
+    const { data } = await executeShopifyRequest<{
+      bulkOperation: {
+        status: string;
+        objectCount: string;
+        rootObjectCount: string;
+        url?: string | null;
+        partialDataUrl?: string | null;
+        errorCode?: string | null;
+      } | null;
+    }>(userId, `query GetBulkOperation($id: ID!) {
+      bulkOperation(id: $id) { status objectCount rootObjectCount url partialDataUrl errorCode }
+    }`, { id: job.operationId });
+    const operation = data.bulkOperation;
+    if (!operation) {
+      throw new ApiError(httpStatus.NOT_FOUND, 'Shopify no longer recognizes this bulk operation.');
+    }
+
+    const operationStatus = operation.status.toUpperCase();
+    const isTerminal = ['COMPLETED', 'FAILED', 'CANCELED', 'CANCELLED', 'EXPIRED'].includes(operationStatus);
+    const resultUrl = operation.url ?? operation.partialDataUrl ?? undefined;
+    let rows = job.rows;
+    if (isTerminal && resultUrl) {
+      try {
+        const resultResponse = await fetch(resultUrl);
+        if (resultResponse.ok) {
+          rows = parseBulkResults(await resultResponse.text());
+        }
+      } catch (error) {
+        logger.warn({ jobId: job.id, error }, 'Could not download Shopify bulk operation results');
+      }
+    }
+    const failedRows = rows.filter((row) => row.errors.length > 0).length;
+    const succeededRows = rows.filter((row) => row.productId && row.errors.length === 0).length;
+    job.set({
+      operationStatus,
+      processedRows: Number(operation.rootObjectCount || operation.objectCount || 0),
+      status: isTerminal ? (operationStatus === 'COMPLETED' ? 'completed' : operationStatus.startsWith('CANCEL') ? 'canceled' : 'failed') : 'running',
+      resultUrl: operation.url ?? undefined,
+      partialDataUrl: operation.partialDataUrl ?? undefined,
+      rows,
+      failedRows,
+      succeededRows,
+      lastError: operation.errorCode ?? undefined,
+      completedAt: isTerminal ? new Date() : undefined
+    });
+    await job.save();
+    return job.toObject();
+  },
+
+  async listBulkJobs(userId: string) {
+    return ShopifyBulkJobModel.find({ userId }).sort({ createdAt: -1 }).limit(25).lean();
+  },
+
+  async cancelBulkJob(userId: string, jobId: string) {
+    const job = await ShopifyBulkJobModel.findOne({ _id: jobId, userId });
+    if (!job || !job.operationId) {
+      throw new ApiError(httpStatus.NOT_FOUND, 'Shopify bulk upload job was not found.');
+    }
+    const { data } = await executeShopifyRequest<{
+      bulkOperationCancel: { bulkOperation: { status: string } | null; userErrors: Array<{ message: string }> };
+    }>(userId, `mutation CancelBulkOperation($id: ID!) {
+      bulkOperationCancel(id: $id) { bulkOperation { status } userErrors { message } }
+    }`, { id: job.operationId });
+    const error = data.bulkOperationCancel.userErrors[0]?.message;
+    if (error) {
+      throw new ApiError(httpStatus.BAD_REQUEST, error);
+    }
+    job.status = 'canceled';
+    job.operationStatus = data.bulkOperationCancel.bulkOperation?.status ?? 'CANCELED';
+    job.completedAt = new Date();
+    await job.save();
+    return job.toObject();
+  },
+
   async getProductImageProxy(imagePath: string) {
     if (!imagePath) {
       throw new ApiError(httpStatus.BAD_REQUEST, 'Missing Shopify product image path');
